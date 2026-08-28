@@ -1,0 +1,76 @@
+[package]
+name = "watchtower"
+version = "0.1.0"
+edition = "2024"
+
+# TODO: This is just copied from cicd to get started, this can 100% be thinned down.
+[dependencies]
+indoc = "2"
+async-trait = "0.1"
+env_logger = "0.10"
+futures-util = { version = "0.3.17", default-features = false, features = [
+  "std",
+] }
+actix-web = "4"
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
+rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite_migration = "1.2.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_variant = "0.1.3"
+log = "0.4"
+actix-session = { version = "0.8.0", features = ["cookie-session"] }
+pwhash = "1"
+tokio-tungstenite = "0.21.0"
+url = "2.5.0"
+tokio = { version = "1.37.0", features = [
+  "io-std",
+  "macros",
+  "rt-multi-thread",
+] }
+chrono = "0.4.38"
+chrono-tz = "0.10.3"
+reqwest = { version = "0.12.4", features = ["json"] }
+async-graphql = "7.0.5"
+async-graphql-actix-web = "7.0.5"
+regex = "1.10.4"
+maud = { version = "0.26.0", features = ["actix-web"] }
+serenity = { version = "0.12.0", default-features = false, features = [
+  "client",
+  "gateway",
+  "rustls_backend",
+  "model",
+] }
+thiserror = "1.0.56"
+anyhow = "1.0.80"
+md5 = "0.7"
+
+# Kubernetes related dependencies
+kube = { version = "0.99.0", features = ["runtime", "derive"] }
+k8s-openapi = { version = "0.24.0", features = ["v1_32"] }
+schemars = "0.8.22"
+
+# metrics
+actix-web-opentelemetry = { version = "0.16.0", features = [
+  "metrics",
+  "metrics-prometheus",
+] }
+opentelemetry = { version = "0.21", features = ["trace"] }
+opentelemetry_sdk = { version = "0.21", features = [
+  "metrics",
+  "rt-tokio-current-thread",
+] }
+opentelemetry-prometheus = { version = "0.14" }
+prometheus = { version = "0.13" }
+octocrab = "0.46.0"
+jsonwebtoken = "9.3" # for octocrab App auth (EncodingKey)
+serde_yaml = "0.9.34"
+itertools = "0.14.0"
+sha2 = "0.10.9"
+
+[lints.clippy]
+# Deny unwrap - should always use proper Result types and error handling
+unwrap_used = "deny"
+# Warn on expect - it's okay for truly fatal cases but we want to be aware of them
+expect_used = "warn"

@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: watchtower
+  name: watchtower
+  namespace: cicd
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: watchtower
+  template:
+    metadata:
+      labels:
+        app: watchtower
+    spec:
+      containers:
+        - command:
+            - watchtower
+          env:
+            - name: DATABASE_PATH
+              value: /data/db.db
+          image: ghcr.io/kj800x/watchtower:commit-$SHA
+          name: watchtower
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /data
+              name: watchtower-data
+          workingDir: /usr/src/watchtower
+      imagePullSecrets:
+        - name: ghcr-kj800x
+      volumes:
+        - name: watchtower-data
+          nfs:
+            path: /data/services/watchtower
+            server: 10.60.1.15
+      nodeSelector:
+        dedicated: nas
