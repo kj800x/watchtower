@@ -3,6 +3,9 @@ use rusqlite::Connection;
 use std::ops::Deref;
 
 pub mod migrations;
+pub mod repo;
+pub mod tag;
+pub mod tag_history;
 
 pub struct ExistenceResult {
     id: u64,

@@ -38,7 +38,7 @@ mod web;
 use crate::db::{SqliteConnectionCustomizer, migrations::migrate};
 use crate::poller::start_update_poller;
 use crate::prelude::*;
-use crate::web::webhook_recent_list;
+use crate::web::{create_repo, get_repo, list_repos, set_repo_active, webhook_recent_list};
 use watchtower::serve_static_file;
 
 async fn start_http(
@@ -48,7 +48,7 @@ async fn start_http(
     log::info!("Starting HTTP server at http://localhost:8080/api");
 
     HttpServer::new(move || {
-        let mut app = App::new();
+        let app = App::new();
 
         app.wrap(RequestTracing::new())
             .wrap(RequestMetrics::default())
@@ -63,7 +63,10 @@ async fn start_http(
             )
             .app_data(Data::new(pool.clone()))
             .wrap(middleware::Logger::default())
-            .service(webhook_recent_list)
+            .service(list_repos)
+            .service(get_repo)
+            .service(create_repo)
+            .service(set_repo_active)
             .service(serve_static_file!("htmx.min.js"))
             .service(serve_static_file!("idiomorph.min.js"))
             .service(serve_static_file!("idiomorph-ext.min.js"))
