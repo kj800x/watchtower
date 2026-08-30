@@ -38,7 +38,10 @@ mod web;
 use crate::db::{SqliteConnectionCustomizer, migrations::migrate};
 use crate::poller::start_update_poller;
 use crate::prelude::*;
-use crate::web::{create_repo, get_repo, list_repos, set_repo_active, webhook_recent_list};
+use crate::web::{
+    create_repo, get_hydrated_repo, get_repo, list_hydrated_repos, list_repos, set_repo_active,
+    webhook_recent_list,
+};
 use watchtower::serve_static_file;
 
 async fn start_http(
@@ -67,6 +70,8 @@ async fn start_http(
             .service(get_repo)
             .service(create_repo)
             .service(set_repo_active)
+            .service(list_hydrated_repos)
+            .service(get_hydrated_repo)
             .service(serve_static_file!("htmx.min.js"))
             .service(serve_static_file!("idiomorph.min.js"))
             .service(serve_static_file!("idiomorph-ext.min.js"))

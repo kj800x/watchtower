@@ -12,9 +12,9 @@ pub struct TagHistory {
 impl TagHistory {
     pub fn from_row(row: &rusqlite::Row) -> AppResult<Self> {
         Ok(TagHistory {
-            tag_id: row.get(1)?,
-            digest: row.get(2)?,
-            seen_at: chrono::DateTime::from_timestamp(row.get::<usize, i64>(3)?, 0).unwrap(),
+            tag_id: row.get(0)?,
+            digest: row.get(1)?,
+            seen_at: chrono::DateTime::from_timestamp(row.get::<usize, i64>(2)?, 0).unwrap(),
         })
     }
 }

@@ -27,6 +27,7 @@ pub struct HydratedRepo {
     pub name: String,
     pub active: bool,
     pub tag: Vec<HydratedTag>,
+    pub last_checked_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[get("/api/repo")]
@@ -103,6 +104,38 @@ pub async fn get_hydrated_repo(
     }
 }
 
-pub fn hydrate(repo: Repo, pool: &PooledConnection<SqliteConnectionManager>) -> HydratedRepo {
-    return todo!();
+pub fn hydrate(repo: Repo, conn: &PooledConnection<SqliteConnectionManager>) -> HydratedRepo {
+    let tag = repo
+        .tags(conn)
+        .unwrap()
+        .into_iter()
+        .map(|tag| {
+            let history = tag
+                .history(conn)
+                .unwrap()
+                .into_iter()
+                .map(|h| HydratedTagHistory {
+                    digest: h.digest,
+                    seen_at: h.seen_at,
+                })
+                .collect_vec();
+
+            HydratedTag {
+                id: tag.id,
+                tag: tag.tag,
+                active: tag.active,
+                first_seen_at: tag.first_seen_at,
+                history,
+            }
+        })
+        .collect_vec();
+
+    HydratedRepo {
+        last_checked_at: repo.last_checked_at(conn).unwrap(),
+        id: repo.id,
+        registry: repo.registry,
+        name: repo.name,
+        active: repo.active,
+        tag,
+    }
 }

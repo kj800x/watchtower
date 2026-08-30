@@ -29,7 +29,7 @@ impl Tag {
         conn: &PooledConnection<SqliteConnectionManager>,
     ) -> AppResult<Vec<TagHistory>> {
         let mut stmt =
-            conn.prepare("SELECT tag_id, digest, seen_at FROM tag_history WHERE tag_id = ?1")?;
+            conn.prepare("SELECT tag_id, digest, seen_at FROM tag_history WHERE tag_id = ?1 ORDER BY seen_at DESC")?;
         let mut rows = stmt.query(params![self.id])?;
         let mut history = Vec::new();
 
