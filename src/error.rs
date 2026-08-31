@@ -88,6 +88,10 @@ pub enum AppError {
     #[error("HTTP request error: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// Container registry errors
+    #[error("Registry error: {0}")]
+    Registry(#[from] oci_client::errors::OciDistributionError),
+
     /// GraphQL errors
     #[error("GraphQL error: {0}")]
     GraphQL(String),
@@ -175,7 +179,9 @@ impl ResponseError for AppError {
 
             AppError::InvalidInput(_) | AppError::Parse(_) => StatusCode::BAD_REQUEST,
 
-            AppError::Webhook(_) | AppError::Http(_) => StatusCode::BAD_GATEWAY,
+            AppError::Webhook(_) | AppError::Http(_) | AppError::Registry(_) => {
+                StatusCode::BAD_GATEWAY
+            }
         }
     }
 }

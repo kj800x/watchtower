@@ -42,6 +42,18 @@ impl Repo {
         Ok(repos)
     }
 
+    pub fn all_active(conn: &PooledConnection<SqliteConnectionManager>) -> AppResult<Vec<Self>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, registry, name, active FROM repo WHERE active = TRUE ORDER BY name ASC",
+        )?;
+        let mut rows = stmt.query(params![])?;
+        let mut repos = Vec::new();
+        while let Some(row) = rows.next()? {
+            repos.push(Self::from_row(row)?);
+        }
+        Ok(repos)
+    }
+
     pub fn get(
         id: u64,
         conn: &PooledConnection<SqliteConnectionManager>,

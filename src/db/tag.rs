@@ -26,6 +26,44 @@ impl Tag {
         })
     }
 
+    /// Insert the tag if new, otherwise bump `last_seen_at` and re-activate.
+    /// `seen_at` should be the single timestamp used for the whole refresh
+    /// pass so that `deactivate_missing` can distinguish this pass's tags.
+    pub fn upsert(
+        repo_id: u64,
+        tag: &str,
+        seen_at: chrono::DateTime<chrono::Utc>,
+        conn: &PooledConnection<SqliteConnectionManager>,
+    ) -> AppResult<Self> {
+        Ok(conn
+            .prepare(
+                "INSERT INTO tag (repo_id, tag, active, first_seen_at, last_seen_at)
+                 VALUES (?1, ?2, TRUE, ?3, ?3)
+                 ON CONFLICT(repo_id, tag) DO UPDATE SET
+                     active = TRUE,
+                     last_seen_at = ?3
+                 RETURNING id, repo_id, tag, active, first_seen_at, last_seen_at",
+            )?
+            .query_row(params![repo_id, tag, seen_at.timestamp()], |row| {
+                Ok(Self::from_row(row))
+            })??)
+    }
+
+    /// Mark tags that were not seen in the refresh pass at `seen_at` (i.e.
+    /// have disappeared from the registry's tag list) as inactive.
+    pub fn deactivate_missing(
+        repo_id: u64,
+        seen_at: chrono::DateTime<chrono::Utc>,
+        conn: &PooledConnection<SqliteConnectionManager>,
+    ) -> AppResult<usize> {
+        Ok(conn
+            .prepare(
+                "UPDATE tag SET active = FALSE
+                 WHERE repo_id = ?1 AND active = TRUE AND last_seen_at < ?2",
+            )?
+            .execute(params![repo_id, seen_at.timestamp()])?)
+    }
+
     pub fn history(
         &self,
         conn: &PooledConnection<SqliteConnectionManager>,
