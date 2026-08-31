@@ -13,7 +13,7 @@ RUN cargo build --release
 
 # - Copy source
 COPY src ./src
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs src/lib.rs && cargo build --release
 
 # ---- Runtime Stage ----
 FROM alpine:latest AS runtime
