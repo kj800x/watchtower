@@ -1,4 +1,7 @@
-use crate::{db::tag::Tag, error::AppResult};
+use crate::{
+    db::{repo_state::RepoState, tag::Tag},
+    error::AppResult,
+};
 use r2d2::PooledConnection;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
@@ -99,25 +102,16 @@ impl Repo {
         Ok(())
     }
 
-    pub fn last_checked_at(
+    pub fn state(
         &self,
         conn: &PooledConnection<SqliteConnectionManager>,
-    ) -> AppResult<Option<chrono::DateTime<chrono::Utc>>> {
-        let mut stmt = conn.prepare("SELECT last_checked_at FROM repo_state WHERE repo_id = ?1")?;
-        let mut rows = stmt.query(params![self.id])?;
-
-        let mut last_checked_at = None;
-        while let Some(row) = rows.next()? {
-            let ts = row.get(0)?;
-            last_checked_at = Some(chrono::DateTime::from_timestamp(ts, 0).unwrap());
-        }
-
-        Ok(last_checked_at)
+    ) -> AppResult<Option<RepoState>> {
+        RepoState::get(self.id, conn)
     }
 
     pub fn tags(&self, conn: &PooledConnection<SqliteConnectionManager>) -> AppResult<Vec<Tag>> {
         let mut stmt = conn.prepare(
-            "SELECT id, repo_id, tag, active, first_seen_at FROM tag WHERE repo_id = ?1 ORDER BY first_seen_at DESC, tag DESC",
+            "SELECT id, repo_id, tag, active, first_seen_at, last_seen_at FROM tag WHERE repo_id = ?1 ORDER BY first_seen_at DESC, tag DESC",
         )?;
         let mut rows = stmt.query(params![self.id])?;
 

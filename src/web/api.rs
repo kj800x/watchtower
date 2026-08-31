@@ -8,7 +8,8 @@ use crate::{
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HydratedTagHistory {
     pub digest: String,
-    pub seen_at: chrono::DateTime<chrono::Utc>,
+    pub first_seen_at: chrono::DateTime<chrono::Utc>,
+    pub last_seen_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -17,6 +18,7 @@ pub struct HydratedTag {
     pub tag: String,
     pub active: bool,
     pub first_seen_at: chrono::DateTime<chrono::Utc>,
+    pub last_seen_at: chrono::DateTime<chrono::Utc>,
     pub history: Vec<HydratedTagHistory>,
 }
 
@@ -28,6 +30,9 @@ pub struct HydratedRepo {
     pub active: bool,
     pub tag: Vec<HydratedTag>,
     pub last_checked_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_attempted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_error: Option<String>,
+    pub consecutive_failures: u32,
 }
 
 #[get("/api/repo")]
@@ -116,7 +121,8 @@ pub fn hydrate(repo: Repo, conn: &PooledConnection<SqliteConnectionManager>) -> 
                 .into_iter()
                 .map(|h| HydratedTagHistory {
                     digest: h.digest,
-                    seen_at: h.seen_at,
+                    first_seen_at: h.first_seen_at,
+                    last_seen_at: h.last_seen_at,
                 })
                 .collect_vec();
 
@@ -125,13 +131,19 @@ pub fn hydrate(repo: Repo, conn: &PooledConnection<SqliteConnectionManager>) -> 
                 tag: tag.tag,
                 active: tag.active,
                 first_seen_at: tag.first_seen_at,
+                last_seen_at: tag.last_seen_at,
                 history,
             }
         })
         .collect_vec();
 
+    let state = repo.state(conn).unwrap();
+
     HydratedRepo {
-        last_checked_at: repo.last_checked_at(conn).unwrap(),
+        last_checked_at: state.as_ref().and_then(|s| s.last_checked_at),
+        last_attempted_at: state.as_ref().and_then(|s| s.last_attempted_at),
+        last_error: state.as_ref().and_then(|s| s.last_error.clone()),
+        consecutive_failures: state.as_ref().map(|s| s.consecutive_failures).unwrap_or(0),
         id: repo.id,
         registry: repo.registry,
         name: repo.name,

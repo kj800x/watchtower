@@ -6,7 +6,8 @@ use crate::error::AppResult;
 pub struct TagHistory {
     pub tag_id: u64,
     pub digest: String,
-    pub seen_at: chrono::DateTime<chrono::Utc>,
+    pub first_seen_at: chrono::DateTime<chrono::Utc>,
+    pub last_seen_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl TagHistory {
@@ -14,7 +15,8 @@ impl TagHistory {
         Ok(TagHistory {
             tag_id: row.get(0)?,
             digest: row.get(1)?,
-            seen_at: chrono::DateTime::from_timestamp(row.get::<usize, i64>(2)?, 0).unwrap(),
+            first_seen_at: chrono::DateTime::from_timestamp(row.get::<usize, i64>(2)?, 0).unwrap(),
+            last_seen_at: chrono::DateTime::from_timestamp(row.get::<usize, i64>(3)?, 0).unwrap(),
         })
     }
 }

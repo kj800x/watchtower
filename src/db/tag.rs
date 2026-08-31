@@ -11,6 +11,7 @@ pub struct Tag {
     pub tag: String,
     pub active: bool,
     pub first_seen_at: chrono::DateTime<chrono::Utc>,
+    pub last_seen_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl Tag {
@@ -21,6 +22,7 @@ impl Tag {
             tag: row.get(2)?,
             active: row.get(3)?,
             first_seen_at: chrono::DateTime::from_timestamp(row.get::<usize, i64>(4)?, 0).unwrap(),
+            last_seen_at: chrono::DateTime::from_timestamp(row.get::<usize, i64>(5)?, 0).unwrap(),
         })
     }
 
@@ -29,7 +31,7 @@ impl Tag {
         conn: &PooledConnection<SqliteConnectionManager>,
     ) -> AppResult<Vec<TagHistory>> {
         let mut stmt =
-            conn.prepare("SELECT tag_id, digest, seen_at FROM tag_history WHERE tag_id = ?1 ORDER BY seen_at DESC")?;
+            conn.prepare("SELECT tag_id, digest, first_seen_at, last_seen_at FROM tag_history WHERE tag_id = ?1 ORDER BY first_seen_at DESC")?;
         let mut rows = stmt.query(params![self.id])?;
         let mut history = Vec::new();
 

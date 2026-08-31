@@ -4,6 +4,7 @@ use std::ops::Deref;
 
 pub mod migrations;
 pub mod repo;
+pub mod repo_state;
 pub mod tag;
 pub mod tag_history;
 
