@@ -68,6 +68,7 @@ jsonwebtoken = "9.3" # for octocrab App auth (EncodingKey)
 serde_yaml = "0.9.34"
 itertools = "0.14.0"
 sha2 = "0.10.9"
+oci-client = "0.17.0"
 
 [lints.clippy]
 # Deny unwrap - should always use proper Result types and error handling
