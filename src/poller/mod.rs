@@ -57,11 +57,12 @@ async fn scheduler_pass(
             Ok(summary) => {
                 RepoState::record_success(repo.id, started_at, &conn)?;
                 log::info!(
-                    "Refreshed {}/{}: {} tags ({} new), {} digests fetched, {} digest fetches failed, {} tags deactivated",
+                    "Refreshed {}/{}: {} tags ({} new, {} excluded), {} digests fetched, {} digest fetches failed, {} tags deactivated",
                     repo.registry,
                     repo.name,
                     summary.tags_seen,
                     summary.tags_new,
+                    summary.tags_excluded,
                     summary.digests_fetched,
                     summary.digests_failed,
                     summary.tags_deactivated,
@@ -107,6 +108,7 @@ fn is_due(state: Option<&RepoState>, now: DateTime<Utc>) -> bool {
 }
 
 struct RefreshSummary {
+    tags_excluded: usize,
     tags_seen: usize,
     tags_new: usize,
     digests_fetched: usize,
@@ -124,9 +126,15 @@ async fn refresh_repo(
         .parse()
         .map_err(|e: oci_client::ParseError| AppError::Parse(e.to_string()))?;
 
-    let tags = list_all_tags(client, &reference).await?;
+    let all_tags = list_all_tags(client, &reference).await?;
+    let total = all_tags.len();
+    let tags: Vec<String> = all_tags
+        .into_iter()
+        .filter(|t| !classify::is_excluded(t))
+        .collect();
 
     let mut summary = RefreshSummary {
+        tags_excluded: total - tags.len(),
         tags_seen: tags.len(),
         tags_new: 0,
         digests_fetched: 0,

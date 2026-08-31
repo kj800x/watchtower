@@ -12,6 +12,12 @@
 /// like `-alpine` or prerelease like `-rc1`) doesn't affect immutability.
 /// Truncated versions (`3`, `3.41`), named tags (`latest`, `alpine`), and
 /// everything else float.
+/// Tags excluded from tracking entirely: never stored, never fetched.
+/// These are per-commit/per-PR CI artifacts, not versions anyone deploys.
+pub fn is_excluded(tag: &str) -> bool {
+    tag.starts_with("pr-") || tag.starts_with("commit-")
+}
+
 pub fn is_immutable(tag: &str) -> bool {
     let tag = tag.strip_prefix('v').unwrap_or(tag);
     let core = tag.split('-').next().unwrap_or("");
@@ -25,7 +31,17 @@ pub fn is_immutable(tag: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_immutable;
+    use super::{is_excluded, is_immutable};
+
+    #[test]
+    fn ci_artifact_tags_are_excluded() {
+        assert!(is_excluded("pr-3430"));
+        assert!(is_excluded("commit-8f2c1aa"));
+        assert!(!is_excluded("latest"));
+        assert!(!is_excluded("v3.41.3"));
+        assert!(!is_excluded("prod"));
+        assert!(!is_excluded("commitment"));
+    }
 
     #[test]
     fn full_versions_are_immutable() {
