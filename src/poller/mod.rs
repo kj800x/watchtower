@@ -12,7 +12,20 @@ use tokio::time;
 use crate::{
     db::{repo::Repo, repo_state::RepoState, tag::Tag, tag_history::TagHistory},
     error::{AppError, AppResult, format_error_chain},
+    metrics,
 };
+
+/// Handle for requesting an immediate out-of-schedule refresh of a repo,
+/// bypassing the freshness check and failure backoff.
+#[derive(Clone)]
+pub struct RefreshRequester(tokio::sync::mpsc::UnboundedSender<u64>);
+
+impl RefreshRequester {
+    pub fn request(&self, repo_id: u64) {
+        // The poller loop only drops the receiver on shutdown.
+        let _ = self.0.send(repo_id);
+    }
+}
 
 /// How often a repo's registry metadata is considered stale.
 const REFRESH_INTERVAL: chrono::Duration = chrono::Duration::hours(6);
@@ -33,18 +46,52 @@ const DIGEST_CONCURRENCY: usize = 8;
 /// seconds and completes over subsequent passes.
 const BACKFILL_BUDGET: usize = 500;
 
-pub async fn start_update_poller(pool: Pool<SqliteConnectionManager>) {
+pub fn refresh_requester() -> (RefreshRequester, tokio::sync::mpsc::UnboundedReceiver<u64>) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    (RefreshRequester(tx), rx)
+}
+
+pub async fn start_update_poller(
+    pool: Pool<SqliteConnectionManager>,
+    mut refresh_requests: tokio::sync::mpsc::UnboundedReceiver<u64>,
+) {
     let client = oci_client::Client::default();
 
     log::info!("Starting update poller");
 
     let mut interval = time::interval(SCHEDULER_TICK);
     loop {
-        interval.tick().await;
-        if let Err(e) = scheduler_pass(&client, &pool).await {
-            log::error!("Poller scheduler pass failed: {}", format_error_chain(&e));
+        tokio::select! {
+            _ = interval.tick() => {
+                if let Err(e) = scheduler_pass(&client, &pool).await {
+                    log::error!("Poller scheduler pass failed: {}", format_error_chain(&e));
+                }
+            }
+            Some(repo_id) = refresh_requests.recv() => {
+                if let Err(e) = forced_refresh(&client, &pool, repo_id).await {
+                    log::error!(
+                        "Forced refresh of repo {} failed: {}",
+                        repo_id,
+                        format_error_chain(&e)
+                    );
+                }
+            }
         }
     }
+}
+
+async fn forced_refresh(
+    client: &oci_client::Client,
+    pool: &Pool<SqliteConnectionManager>,
+    repo_id: u64,
+) -> AppResult<()> {
+    let conn = pool.get()?;
+    let Some(repo) = Repo::get(repo_id, &conn)? else {
+        log::warn!("Forced refresh requested for unknown repo {}", repo_id);
+        return Ok(());
+    };
+    log::info!("Forced refresh of {}/{}", repo.registry, repo.name);
+    refresh_and_record(client, &conn, &repo).await
 }
 
 async fn scheduler_pass(
@@ -60,41 +107,55 @@ async fn scheduler_pass(
             continue;
         }
 
-        let started_at = Utc::now();
-        match refresh_repo(client, &conn, &repo, started_at).await {
-            Ok(summary) => {
-                RepoState::record_success(repo.id, started_at, &conn)?;
-                log::info!(
-                    "Refreshed {}/{}: {} tags ({} new, {} excluded), {} digests fetched ({} failed, {} deferred), {} tags deactivated{}",
-                    repo.registry,
-                    repo.name,
-                    summary.tags_seen,
-                    summary.tags_new,
-                    summary.tags_excluded,
-                    summary.digests_fetched,
-                    summary.digests_failed,
-                    summary.digests_deferred,
-                    summary.tags_deactivated,
-                    if summary.rate_limited {
-                        " [rate limited, digest fetches abandoned]"
-                    } else {
-                        ""
-                    },
-                );
-            }
-            Err(e) => {
-                let message = format_error_chain(&e);
-                log::warn!(
-                    "Failed to refresh {}/{}: {}",
-                    repo.registry,
-                    repo.name,
-                    message
-                );
-                RepoState::record_failure(repo.id, started_at, &message, &conn)?;
-            }
-        }
+        refresh_and_record(client, &conn, &repo).await?;
     }
 
+    Ok(())
+}
+
+async fn refresh_and_record(
+    client: &oci_client::Client,
+    conn: &PooledConnection<SqliteConnectionManager>,
+    repo: &Repo,
+) -> AppResult<()> {
+    let started_at = Utc::now();
+    match refresh_repo(client, conn, repo, started_at).await {
+        Ok(summary) => {
+            metrics::get().repo_refreshes.with_label_values(&["ok"]).inc();
+            RepoState::record_success(repo.id, started_at, conn)?;
+            log::info!(
+                "Refreshed {}/{}: {} tags ({} new, {} excluded), {} digests fetched ({} failed, {} deferred), {} tags deactivated{}",
+                repo.registry,
+                repo.name,
+                summary.tags_seen,
+                summary.tags_new,
+                summary.tags_excluded,
+                summary.digests_fetched,
+                summary.digests_failed,
+                summary.digests_deferred,
+                summary.tags_deactivated,
+                if summary.rate_limited {
+                    " [rate limited, digest fetches abandoned]"
+                } else {
+                    ""
+                },
+            );
+        }
+        Err(e) => {
+            metrics::get()
+                .repo_refreshes
+                .with_label_values(&["error"])
+                .inc();
+            let message = format_error_chain(&e);
+            log::warn!(
+                "Failed to refresh {}/{}: {}",
+                repo.registry,
+                repo.name,
+                message
+            );
+            RepoState::record_failure(repo.id, started_at, &message, conn)?;
+        }
+    }
     Ok(())
 }
 
@@ -204,6 +265,16 @@ async fn refresh_repo(
     .buffer_unordered(DIGEST_CONCURRENCY);
 
     while let Some((tag_id, tag_name, result)) = fetches.next().await {
+        let outcome = match &result {
+            Ok(_) => "ok",
+            Err(e) if is_rate_limit(e) => "rate_limited",
+            Err(_) => "error",
+        };
+        metrics::get()
+            .registry_api_calls
+            .with_label_values(&[&repo.registry, "fetch_digest", outcome])
+            .inc();
+
         match result {
             Ok(digest) => {
                 TagHistory::record(tag_id, &digest, now, conn)?;
@@ -264,14 +335,26 @@ async fn list_all_tags(
     let mut last: Option<String> = None;
 
     for _ in 0..MAX_TAG_PAGES {
-        let response = client
+        let result = client
             .list_tags(
                 reference,
                 &oci_client::secrets::RegistryAuth::Anonymous,
                 Some(TAG_PAGE_SIZE),
                 last.as_deref(),
             )
-            .await?;
+            .await;
+
+        let outcome = match &result {
+            Ok(_) => "ok",
+            Err(e) if is_rate_limit(e) => "rate_limited",
+            Err(_) => "error",
+        };
+        metrics::get()
+            .registry_api_calls
+            .with_label_values(&[reference.registry(), "list_tags", outcome])
+            .inc();
+
+        let response = result?;
 
         let page_len = response.tags.len();
         let next_last = response.tags.last().cloned();

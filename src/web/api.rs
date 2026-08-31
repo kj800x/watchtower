@@ -2,6 +2,7 @@ use itertools::Itertools;
 
 use crate::{
     db::repo::{Repo, RepoEgg},
+    poller::RefreshRequester,
     prelude::*,
 };
 
@@ -80,6 +81,23 @@ pub async fn set_repo_active(
     } else {
         return Err(AppError::NotFound("repo not found".to_string()));
     }
+}
+
+#[post("/api/repo/{id}/refresh")]
+pub async fn refresh_repo_now(
+    pool: web::Data<Pool<SqliteConnectionManager>>,
+    refresh: web::Data<RefreshRequester>,
+    id: web::Path<u64>,
+) -> Result<impl Responder, AppError> {
+    let conn = pool.get().map_err(AppError::from)?;
+    let id = id.into_inner();
+
+    if Repo::get(id, &conn)?.is_none() {
+        return Err(AppError::NotFound("repo not found".to_string()));
+    }
+
+    refresh.request(id);
+    Ok(HttpResponse::Accepted().json(serde_json::json!({ "refresh_requested": id })))
 }
 
 #[get("/api/hydrated/repo")]

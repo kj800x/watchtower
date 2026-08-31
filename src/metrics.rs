@@ -1,52 +1,40 @@
 use std::sync::OnceLock;
 
-use opentelemetry::{
-    global,
-    metrics::{Counter, Histogram},
-};
-use prometheus::{IntGaugeVec, Opts};
+use prometheus::{IntCounterVec, Opts};
 
 pub struct Metrics {
-    pub deploy_actions: Counter<u64>,
-    pub commits_observed: Counter<u64>,
-    pub builds_started: Counter<u64>,
-    pub builds_resolved: Counter<u64>,
-    pub build_duration_seconds: Histogram<f64>,
-    pub github_rate_limit_remaining: IntGaugeVec,
-    pub github_rate_limit_limit: IntGaugeVec,
+    /// Requests made to container registries, labeled by registry hostname,
+    /// operation (list_tags | fetch_digest), and outcome (ok | error |
+    /// rate_limited). list_tags counts one increment per page request.
+    pub registry_api_calls: IntCounterVec,
+    /// Completed repo refresh attempts by outcome (ok | error).
+    pub repo_refreshes: IntCounterVec,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
 
 pub fn init(registry: &prometheus::Registry) -> Result<(), anyhow::Error> {
-    let meter = global::meter("cicd");
-
-    let github_rate_limit_remaining = IntGaugeVec::new(
+    let registry_api_calls = IntCounterVec::new(
         Opts::new(
-            "cicd_github_rate_limit_remaining",
-            "GitHub API rate limit remaining requests",
+            "watchtower_registry_api_calls_total",
+            "Requests made to container registries",
         ),
-        &["installation"],
+        &["registry", "operation", "outcome"],
     )?;
-    registry.register(Box::new(github_rate_limit_remaining.clone()))?;
+    registry.register(Box::new(registry_api_calls.clone()))?;
 
-    let github_rate_limit_limit = IntGaugeVec::new(
+    let repo_refreshes = IntCounterVec::new(
         Opts::new(
-            "cicd_github_rate_limit_limit",
-            "GitHub API rate limit total requests allowed",
+            "watchtower_repo_refreshes_total",
+            "Completed repo refresh attempts",
         ),
-        &["installation"],
+        &["outcome"],
     )?;
-    registry.register(Box::new(github_rate_limit_limit.clone()))?;
+    registry.register(Box::new(repo_refreshes.clone()))?;
 
     let metrics = Metrics {
-        deploy_actions: meter.u64_counter("cicd_deploy_actions").init(),
-        commits_observed: meter.u64_counter("cicd_commits_observed").init(),
-        builds_started: meter.u64_counter("cicd_builds_started").init(),
-        builds_resolved: meter.u64_counter("cicd_builds_resolved").init(),
-        build_duration_seconds: meter.f64_histogram("cicd_build_duration_seconds").init(),
-        github_rate_limit_remaining,
-        github_rate_limit_limit,
+        registry_api_calls,
+        repo_refreshes,
     };
 
     METRICS

@@ -36,17 +36,18 @@ mod poller;
 mod web;
 
 use crate::db::{SqliteConnectionCustomizer, migrations::migrate};
-use crate::poller::start_update_poller;
+use crate::poller::{RefreshRequester, refresh_requester, start_update_poller};
 use crate::prelude::*;
 use crate::web::{
-    create_repo, get_hydrated_repo, get_repo, list_hydrated_repos, list_repos, set_repo_active,
-    webhook_recent_list,
+    create_repo, get_hydrated_repo, get_repo, list_hydrated_repos, list_repos, refresh_repo_now,
+    set_repo_active,
 };
 use watchtower::serve_static_file;
 
 async fn start_http(
     registry: prometheus::Registry,
     pool: Pool<SqliteConnectionManager>,
+    refresh: RefreshRequester,
 ) -> Result<(), std::io::Error> {
     log::info!("Starting HTTP server at http://localhost:8080/api");
 
@@ -65,11 +66,13 @@ async fn start_http(
                     .build(),
             )
             .app_data(Data::new(pool.clone()))
+            .app_data(Data::new(refresh.clone()))
             .wrap(middleware::Logger::default())
             .service(list_repos)
             .service(get_repo)
             .service(create_repo)
             .service(set_repo_active)
+            .service(refresh_repo_now)
             .service(list_hydrated_repos)
             .service(get_hydrated_repo)
             .service(serve_static_file!("htmx.min.js"))
@@ -115,13 +118,17 @@ async fn main() -> std::io::Result<()> {
         migrate(conn).expect("Failed to run database migrations");
     }
 
+    let (refresh_tx, refresh_rx) = refresh_requester();
+
     tokio::select! {
         _ = Box::pin(start_http(
             registry,
             pool.clone(),
+            refresh_tx,
         )) => {},
         _ = Box::pin(start_update_poller(
-            pool.clone()
+            pool.clone(),
+            refresh_rx,
         )) => {},
     };
 
