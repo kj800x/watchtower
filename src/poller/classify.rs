@@ -13,9 +13,19 @@
 /// Truncated versions (`3`, `3.41`), named tags (`latest`, `alpine`), and
 /// everything else float.
 /// Tags excluded from tracking entirely: never stored, never fetched.
-/// These are per-commit/per-PR CI artifacts, not versions anyone deploys.
+///
+/// - `pr-*` / `commit-*`: per-PR and per-commit CI artifacts
+/// - `sha256-*`: cosign signature/attestation/SBOM artifacts
+///   (`sha256-<digest>.sig` and friends)
+/// - arch-prefixed tags (`amd64-*`, `arm64v8-*`, ...): single-arch
+///   duplicates of the multi-arch tags, published by linuxserver.io images
+///   in the thousands
 pub fn is_excluded(tag: &str) -> bool {
-    tag.starts_with("pr-") || tag.starts_with("commit-")
+    const EXCLUDED_PREFIXES: &[&str] = &[
+        "pr-", "commit-", "sha256-", "amd64-", "arm64v8-", "arm32v7-", "armhf-", "i386-",
+        "ppc64le-", "s390x-", "riscv64-",
+    ];
+    EXCLUDED_PREFIXES.iter().any(|p| tag.starts_with(p))
 }
 
 pub fn is_immutable(tag: &str) -> bool {
@@ -37,8 +47,15 @@ mod tests {
     fn ci_artifact_tags_are_excluded() {
         assert!(is_excluded("pr-3430"));
         assert!(is_excluded("commit-8f2c1aa"));
+        assert!(is_excluded(
+            "sha256-12284c68c09a6a50b4bbb7195e3d9cdb6ff50c102ce543f901ad7ed9d7d52844.sig"
+        ));
+        assert!(is_excluded("amd64-10.8.13-ls249"));
+        assert!(is_excluded("arm64v8-latest"));
+        assert!(is_excluded("arm32v7-2021.10.06"));
         assert!(!is_excluded("latest"));
         assert!(!is_excluded("v3.41.3"));
+        assert!(!is_excluded("10.8.13-ls249"));
         assert!(!is_excluded("prod"));
         assert!(!is_excluded("commitment"));
     }

@@ -3,6 +3,7 @@ mod classify;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
 use oci_client::Reference;
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
@@ -24,6 +25,13 @@ const MAX_TAG_PAGES: usize = 200;
 /// Base delay before retrying a failing repo; doubles per consecutive
 /// failure, capped at REFRESH_INTERVAL.
 const BACKOFF_BASE: chrono::Duration = chrono::Duration::minutes(1);
+/// Concurrent digest fetches per repo refresh.
+const DIGEST_CONCURRENCY: usize = 8;
+/// Max immutable-tag digest backfills per refresh pass. Floating tags are
+/// always fetched; the immutable backlog trickles in at this rate so a
+/// newly added repo with thousands of historical tags is useful within
+/// seconds and completes over subsequent passes.
+const BACKFILL_BUDGET: usize = 500;
 
 pub async fn start_update_poller(pool: Pool<SqliteConnectionManager>) {
     let client = oci_client::Client::default();
@@ -57,7 +65,7 @@ async fn scheduler_pass(
             Ok(summary) => {
                 RepoState::record_success(repo.id, started_at, &conn)?;
                 log::info!(
-                    "Refreshed {}/{}: {} tags ({} new, {} excluded), {} digests fetched, {} digest fetches failed, {} tags deactivated",
+                    "Refreshed {}/{}: {} tags ({} new, {} excluded), {} digests fetched ({} failed, {} deferred), {} tags deactivated{}",
                     repo.registry,
                     repo.name,
                     summary.tags_seen,
@@ -65,7 +73,13 @@ async fn scheduler_pass(
                     summary.tags_excluded,
                     summary.digests_fetched,
                     summary.digests_failed,
+                    summary.digests_deferred,
                     summary.tags_deactivated,
+                    if summary.rate_limited {
+                        " [rate limited, digest fetches abandoned]"
+                    } else {
+                        ""
+                    },
                 );
             }
             Err(e) => {
@@ -113,7 +127,9 @@ struct RefreshSummary {
     tags_new: usize,
     digests_fetched: usize,
     digests_failed: usize,
+    digests_deferred: usize,
     tags_deactivated: usize,
+    rate_limited: bool,
 }
 
 async fn refresh_repo(
@@ -139,8 +155,16 @@ async fn refresh_repo(
         tags_new: 0,
         digests_fetched: 0,
         digests_failed: 0,
+        digests_deferred: 0,
         tags_deactivated: 0,
+        rate_limited: false,
     };
+
+    // Floating tags are re-fetched every refresh; immutable tags only need
+    // their digest resolved once, and the backlog of never-resolved ones is
+    // drained on a per-pass budget, floating first.
+    let mut floating: Vec<(u64, String)> = Vec::new();
+    let mut backfill: Vec<(u64, String)> = Vec::new();
 
     for tag_name in &tags {
         let tag = Tag::upsert(repo.id, tag_name, now, conn)?;
@@ -148,24 +172,55 @@ async fn refresh_repo(
             summary.tags_new += 1;
         }
 
-        // Immutable tags only need their digest resolved once; floating tags
-        // are re-checked on every refresh.
-        if classify::is_immutable(tag_name) && TagHistory::latest(tag.id, conn)?.is_some() {
-            continue;
+        if classify::is_immutable(tag_name) {
+            if TagHistory::latest(tag.id, conn)?.is_none() {
+                backfill.push((tag.id, tag_name.clone()));
+            }
+        } else {
+            floating.push((tag.id, tag_name.clone()));
         }
+    }
 
+    summary.digests_deferred = backfill.len().saturating_sub(BACKFILL_BUDGET);
+    backfill.truncate(BACKFILL_BUDGET);
+    floating.extend(backfill);
+
+    let mut fetches = futures_util::stream::iter(floating.into_iter().map(|(tag_id, tag_name)| {
         let tag_reference = Reference::with_tag(
             reference.registry().to_string(),
             reference.repository().to_string(),
             tag_name.clone(),
         );
-        match client
-            .fetch_manifest_digest(&tag_reference, &oci_client::secrets::RegistryAuth::Anonymous)
-            .await
-        {
+        async move {
+            let result = client
+                .fetch_manifest_digest(
+                    &tag_reference,
+                    &oci_client::secrets::RegistryAuth::Anonymous,
+                )
+                .await;
+            (tag_id, tag_name, result)
+        }
+    }))
+    .buffer_unordered(DIGEST_CONCURRENCY);
+
+    while let Some((tag_id, tag_name, result)) = fetches.next().await {
+        match result {
             Ok(digest) => {
-                TagHistory::record(tag.id, &digest, now, conn)?;
+                TagHistory::record(tag_id, &digest, now, conn)?;
                 summary.digests_fetched += 1;
+            }
+            Err(e) if is_rate_limit(&e) => {
+                // Stop hammering the registry: abandon the rest of this
+                // pass's fetches. Whatever is missing is picked up next pass.
+                log::warn!(
+                    "Rate limited by {} while fetching {}:{}; abandoning remaining digest fetches this pass: {}",
+                    repo.registry,
+                    repo.name,
+                    tag_name,
+                    e
+                );
+                summary.rate_limited = true;
+                break;
             }
             // A single tag's digest failing shouldn't fail the whole refresh;
             // it stays stale and is retried next pass.
@@ -185,6 +240,18 @@ async fn refresh_repo(
     summary.tags_deactivated = Tag::deactivate_missing(repo.id, now, conn)?;
 
     Ok(summary)
+}
+
+/// Whether a registry error is a rate-limit response. oci_client doesn't
+/// expose the status code structurally for API-error envelopes, so this
+/// matches on the rendered message (429 / TOOMANYREQUESTS code / the
+/// retry-after hint some registries include in the error body).
+fn is_rate_limit(e: &oci_client::errors::OciDistributionError) -> bool {
+    let message = e.to_string().to_lowercase();
+    message.contains("429")
+        || message.contains("toomanyrequests")
+        || message.contains("too many requests")
+        || message.contains("retry-after")
 }
 
 /// Fetch the complete tag list, following OCI `n`/`last` pagination until a
