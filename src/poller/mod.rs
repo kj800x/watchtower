@@ -1,4 +1,4 @@
-mod classify;
+pub mod classify;
 
 use std::time::Duration;
 
