@@ -47,9 +47,20 @@ pub fn migrate(mut conn: PooledConnection<SqliteConnectionManager>) -> AppResult
           CREATE INDEX tag_history_tag_id_first_seen_at
               ON tag_history (tag_id, first_seen_at DESC);
       "#}),
-        // M::up(indoc! { r#"
-        //   ALTER TABLE foobar ADD COLUMN barfoo INTEGER;
-        // "#}),
+        // The event feed: append-only, read by cursor (id). See db/event.rs.
+        M::up(indoc! { r#"
+          CREATE TABLE event (
+              id INTEGER PRIMARY KEY NOT NULL,
+              repo_id INTEGER NOT NULL,
+              tag TEXT NOT NULL,
+              kind TEXT NOT NULL,
+              digest TEXT,
+              previous_digest TEXT,
+              at INTEGER NOT NULL,
+              FOREIGN KEY(repo_id) REFERENCES repo(id)
+          );
+          CREATE INDEX event_repo_id_id ON event (repo_id, id DESC);
+      "#}),
     ]);
 
     conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;

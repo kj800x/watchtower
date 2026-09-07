@@ -40,12 +40,13 @@ impl TagHistory {
     /// Record a digest observation. If the tag still points at the same digest
     /// as its latest history row, bump that row's `last_seen_at`; if the
     /// digest changed (or this is the first observation), append a new row.
+    /// Says which of the three happened so the poller can emit an event.
     pub fn record(
         tag_id: u64,
         digest: &str,
         seen_at: chrono::DateTime<chrono::Utc>,
         conn: &PooledConnection<SqliteConnectionManager>,
-    ) -> AppResult<()> {
+    ) -> AppResult<DigestChange> {
         match Self::latest(tag_id, conn)? {
             Some(latest) if latest.digest == digest => {
                 conn.prepare(
@@ -58,15 +59,32 @@ impl TagHistory {
                     digest,
                     latest.first_seen_at.timestamp()
                 ])?;
+                Ok(DigestChange::Same)
             }
-            _ => {
+            previous => {
                 conn.prepare(
                     "INSERT INTO tag_history (tag_id, digest, first_seen_at, last_seen_at)
                      VALUES (?1, ?2, ?3, ?3)",
                 )?
                 .execute(params![tag_id, digest, seen_at.timestamp()])?;
+                Ok(match previous {
+                    Some(latest) => DigestChange::Moved {
+                        from: latest.digest,
+                    },
+                    None => DigestChange::First,
+                })
             }
         }
-        Ok(())
     }
+}
+
+/// What a digest observation did to the tag's history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DigestChange {
+    /// Same digest as before; only `last_seen_at` moved.
+    Same,
+    /// The first digest ever recorded for this tag.
+    First,
+    /// The tag now points somewhere else.
+    Moved { from: String },
 }

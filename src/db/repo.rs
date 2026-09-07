@@ -127,9 +127,7 @@ impl Repo {
         conn: &PooledConnection<SqliteConnectionManager>,
     ) -> AppResult<(u64, u64)> {
         Ok(conn
-            .prepare(
-                "SELECT coalesce(sum(active), 0), count(*) FROM tag WHERE repo_id = ?1",
-            )?
+            .prepare("SELECT coalesce(sum(active), 0), count(*) FROM tag WHERE repo_id = ?1")?
             .query_row(params![self.id], |row| Ok((row.get(0)?, row.get(1)?)))?)
     }
 

@@ -79,7 +79,10 @@ fn render_repo_table(conn: &PooledConnection<SqliteConnectionManager>) -> AppRes
     })
 }
 
-fn render_repo_row(repo: &Repo, conn: &PooledConnection<SqliteConnectionManager>) -> AppResult<Markup> {
+fn render_repo_row(
+    repo: &Repo,
+    conn: &PooledConnection<SqliteConnectionManager>,
+) -> AppResult<Markup> {
     let state = repo.state(conn)?;
     let (active_tags, total_tags) = repo.tag_counts(conn)?;
 

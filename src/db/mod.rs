@@ -2,6 +2,7 @@ use r2d2::CustomizeConnection;
 use rusqlite::Connection;
 use std::ops::Deref;
 
+pub mod event;
 pub mod migrations;
 pub mod repo;
 pub mod repo_state;
