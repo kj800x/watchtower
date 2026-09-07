@@ -10,7 +10,13 @@ use r2d2_sqlite::SqliteConnectionManager;
 use tokio::time;
 
 use crate::{
-    db::{repo::Repo, repo_state::RepoState, tag::Tag, tag_history::TagHistory},
+    db::{
+        event::{Event, EventKind, NewEvent},
+        repo::Repo,
+        repo_state::RepoState,
+        tag::Tag,
+        tag_history::{DigestChange, TagHistory},
+    },
     error::{AppError, AppResult, format_error_chain},
     metrics,
 };
@@ -119,12 +125,20 @@ async fn refresh_and_record(
     repo: &Repo,
 ) -> AppResult<()> {
     let started_at = Utc::now();
-    match refresh_repo(client, conn, repo, started_at).await {
+    // A repo's first successful refresh is a baseline: it emits no events,
+    // or a newly registered image would announce every historical tag.
+    let emit_events = RepoState::get(repo.id, conn)?
+        .and_then(|s| s.last_checked_at)
+        .is_some();
+    match refresh_repo(client, conn, repo, started_at, emit_events).await {
         Ok(summary) => {
-            metrics::get().repo_refreshes.with_label_values(&["ok"]).inc();
+            metrics::get()
+                .repo_refreshes
+                .with_label_values(&["ok"])
+                .inc();
             RepoState::record_success(repo.id, started_at, conn)?;
             log::info!(
-                "Refreshed {}/{}: {} tags ({} new, {} excluded), {} digests fetched ({} failed, {} deferred), {} tags deactivated{}",
+                "Refreshed {}/{}: {} tags ({} new, {} excluded), {} digests fetched ({} failed, {} deferred), {} tags deactivated, {} events{}",
                 repo.registry,
                 repo.name,
                 summary.tags_seen,
@@ -134,6 +148,7 @@ async fn refresh_and_record(
                 summary.digests_failed,
                 summary.digests_deferred,
                 summary.tags_deactivated,
+                summary.events,
                 if summary.rate_limited {
                     " [rate limited, digest fetches abandoned]"
                 } else {
@@ -169,7 +184,10 @@ fn is_due(state: Option<&RepoState>, now: DateTime<Utc>) -> bool {
 
     if state.consecutive_failures > 0 {
         let exponent = state.consecutive_failures.saturating_sub(1).min(16);
-        let backoff = std::cmp::min(BACKOFF_BASE * 2_i32.saturating_pow(exponent), REFRESH_INTERVAL);
+        let backoff = std::cmp::min(
+            BACKOFF_BASE * 2_i32.saturating_pow(exponent),
+            REFRESH_INTERVAL,
+        );
         return match state.last_attempted_at {
             Some(attempted) => now >= attempted + backoff,
             None => true,
@@ -191,6 +209,7 @@ struct RefreshSummary {
     digests_deferred: usize,
     tags_deactivated: usize,
     rate_limited: bool,
+    events: usize,
 }
 
 async fn refresh_repo(
@@ -198,6 +217,7 @@ async fn refresh_repo(
     conn: &PooledConnection<SqliteConnectionManager>,
     repo: &Repo,
     now: DateTime<Utc>,
+    emit_events: bool,
 ) -> AppResult<RefreshSummary> {
     let reference: Reference = format!("{}/{}", repo.registry, repo.name)
         .parse()
@@ -219,6 +239,14 @@ async fn refresh_repo(
         digests_deferred: 0,
         tags_deactivated: 0,
         rate_limited: false,
+        events: 0,
+    };
+    let emit = |new: NewEvent, summary: &mut RefreshSummary| -> AppResult<()> {
+        if emit_events {
+            Event::record(&new, now, conn)?;
+            summary.events += 1;
+        }
+        Ok(())
     };
 
     // Floating tags are re-fetched every refresh; immutable tags only need
@@ -231,6 +259,18 @@ async fn refresh_repo(
         let tag = Tag::upsert(repo.id, tag_name, now, conn)?;
         if tag.first_seen_at.timestamp() == now.timestamp() {
             summary.tags_new += 1;
+            // The digest, if any, follows in a tag_moved-free way: an added
+            // tag's first digest is recorded as history, not as a move.
+            emit(
+                NewEvent {
+                    repo_id: repo.id,
+                    tag: tag_name.clone(),
+                    kind: EventKind::TagAdded,
+                    digest: None,
+                    previous_digest: None,
+                },
+                &mut summary,
+            )?;
         }
 
         if classify::is_immutable(tag_name) {
@@ -277,7 +317,20 @@ async fn refresh_repo(
 
         match result {
             Ok(digest) => {
-                TagHistory::record(tag_id, &digest, now, conn)?;
+                if let DigestChange::Moved { from } =
+                    TagHistory::record(tag_id, &digest, now, conn)?
+                {
+                    emit(
+                        NewEvent {
+                            repo_id: repo.id,
+                            tag: tag_name.clone(),
+                            kind: EventKind::TagMoved,
+                            digest: Some(digest.clone()),
+                            previous_digest: Some(from),
+                        },
+                        &mut summary,
+                    )?;
+                }
                 summary.digests_fetched += 1;
             }
             Err(e) if is_rate_limit(&e) => {
@@ -308,7 +361,20 @@ async fn refresh_repo(
         }
     }
 
-    summary.tags_deactivated = Tag::deactivate_missing(repo.id, now, conn)?;
+    let removed = Tag::deactivate_missing(repo.id, now, conn)?;
+    summary.tags_deactivated = removed.len();
+    for tag in removed {
+        emit(
+            NewEvent {
+                repo_id: repo.id,
+                tag,
+                kind: EventKind::TagRemoved,
+                digest: None,
+                previous_digest: None,
+            },
+            &mut summary,
+        )?;
+    }
 
     Ok(summary)
 }

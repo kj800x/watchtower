@@ -142,7 +142,10 @@ fn render_repo_detail(
     })
 }
 
-fn render_tag_row(tag: &Tag, conn: &PooledConnection<SqliteConnectionManager>) -> AppResult<Markup> {
+fn render_tag_row(
+    tag: &Tag,
+    conn: &PooledConnection<SqliteConnectionManager>,
+) -> AppResult<Markup> {
     let history = tag.history(conn)?;
     let latest = history.first();
 

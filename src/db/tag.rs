@@ -55,13 +55,14 @@ impl Tag {
         repo_id: u64,
         seen_at: chrono::DateTime<chrono::Utc>,
         conn: &PooledConnection<SqliteConnectionManager>,
-    ) -> AppResult<usize> {
-        Ok(conn
-            .prepare(
-                "UPDATE tag SET active = FALSE
-                 WHERE repo_id = ?1 AND active = TRUE AND last_seen_at < ?2",
-            )?
-            .execute(params![repo_id, seen_at.timestamp()])?)
+    ) -> AppResult<Vec<String>> {
+        let mut stmt = conn.prepare(
+            "UPDATE tag SET active = FALSE
+             WHERE repo_id = ?1 AND active = TRUE AND last_seen_at < ?2
+             RETURNING tag",
+        )?;
+        let rows = stmt.query_map(params![repo_id, seen_at.timestamp()], |row| row.get(0))?;
+        Ok(rows.collect::<Result<Vec<String>, _>>()?)
     }
 
     pub fn history(
