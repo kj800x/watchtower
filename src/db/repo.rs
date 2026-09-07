@@ -88,19 +88,21 @@ impl Repo {
         Ok(repo)
     }
 
+    /// Insert the repo, or re-activate it if it exists. The id is kept on
+    /// conflict (INSERT OR REPLACE would delete the row and orphan its tags).
     pub fn upsert(
         repo: &RepoEgg,
         conn: &PooledConnection<SqliteConnectionManager>,
     ) -> AppResult<Self> {
-        conn.prepare("INSERT OR REPLACE INTO repo (registry, name, active) VALUES (?1, ?2, ?3)")?
-            .execute(params![repo.registry, repo.name, true])?;
-
-        Ok(Self {
-            id: conn.last_insert_rowid() as u64,
-            registry: repo.registry.clone(),
-            name: repo.name.clone(),
-            active: true,
-        })
+        Ok(conn
+            .prepare(
+                "INSERT INTO repo (registry, name, active) VALUES (?1, ?2, TRUE)
+                 ON CONFLICT(registry, name) DO UPDATE SET active = TRUE
+                 RETURNING id, registry, name, active",
+            )?
+            .query_row(params![repo.registry, repo.name], |row| {
+                Ok(Self::from_row(row))
+            })??)
     }
 
     pub fn save(
