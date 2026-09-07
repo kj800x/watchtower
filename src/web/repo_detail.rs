@@ -1,5 +1,9 @@
 use crate::{
-    db::{repo::Repo, tag::Tag},
+    db::{
+        event::{Event, EventKind},
+        repo::Repo,
+        tag::Tag,
+    },
     poller::classify,
     prelude::*,
     web::{
@@ -59,6 +63,7 @@ fn render_repo_detail(
     for tag in &tags {
         tag_rows.push(render_tag_row(tag, conn)?);
     }
+    let events = Event::recent_for_repo(repo.id, 20, conn)?;
 
     Ok(html! {
         div class="page-heading" {
@@ -112,6 +117,41 @@ fn render_repo_detail(
                 div class="stat" {
                     div class="stat-label" { "Tags tracked" }
                     div class="stat-value" { (tags.len()) }
+                }
+            }
+        }
+
+        @if !events.is_empty() {
+            div class="card" {
+                h2 { "Recent events" }
+                p class="cell-secondary" { "What changed since the first refresh, newest first. Consumers read the same rows from " code { "/api/events" } "." }
+                table class="data-table" {
+                    thead { tr { th { "When" } th { "Event" } th { "Tag" } th { "Digest" } } }
+                    tbody {
+                        @for e in &events {
+                            tr {
+                                td class="cell-secondary" { (format_relative_time(Some(e.at))) }
+                                td {
+                                    @match e.kind {
+                                        EventKind::TagAdded => { span class="badge badge-active" { "added" } }
+                                        EventKind::TagMoved => { span class="badge badge-floating" { "moved" } }
+                                        EventKind::TagRemoved => { span class="badge badge-error" { "removed" } }
+                                    }
+                                }
+                                td { code { (e.tag) } }
+                                td {
+                                    @if let Some(from) = &e.previous_digest {
+                                        code class="digest" title=(from) { (format_short_digest(from)) } " → "
+                                    }
+                                    @if let Some(d) = &e.digest {
+                                        code class="digest" title=(d) { (format_short_digest(d)) }
+                                    } @else {
+                                        span class="cell-secondary" { "—" }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

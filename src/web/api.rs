@@ -1,7 +1,11 @@
 use itertools::Itertools;
 
 use crate::{
-    db::repo::{Repo, RepoEgg},
+    db::{
+        event::Event,
+        repo::{Repo, RepoEgg},
+    },
+    error::AppError,
     poller::RefreshRequester,
     prelude::*,
 };
@@ -53,6 +57,56 @@ pub async fn get_repo(
     let repo = Repo::get(id.into_inner(), &conn).unwrap();
 
     web::Json(repo)
+}
+
+/// The repo for a registry and image name, hydrated, or 404. This is how a
+/// consumer that knows an image (and not our id) reads its tags.
+#[get("/api/lookup")]
+pub async fn lookup_repo(
+    pool: web::Data<Pool<SqliteConnectionManager>>,
+    query: web::Query<RepoEgg>,
+) -> Result<impl Responder, AppError> {
+    let conn = pool.get()?;
+    match Repo::get_by_egg(&query.into_inner(), &conn)? {
+        Some(repo) => Ok(web::Json(hydrate(repo, &conn))),
+        None => Err(AppError::NotFound("repo not found".to_string())),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EventsQuery {
+    /// Return events with an id greater than this. 0 (the default) means
+    /// from the beginning; `latest_id` from an earlier response means "from
+    /// now".
+    #[serde(default)]
+    pub after: u64,
+    #[serde(default = "default_event_limit")]
+    pub limit: usize,
+}
+
+fn default_event_limit() -> usize {
+    200
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventsPage {
+    pub events: Vec<Event>,
+    /// The newest event id that exists, whether or not it is in this page.
+    /// A consumer whose cursor equals this has nothing more to read.
+    pub latest_id: u64,
+}
+
+/// The event feed, oldest first from a cursor. See db/event.rs.
+#[get("/api/events")]
+pub async fn list_events(
+    pool: web::Data<Pool<SqliteConnectionManager>>,
+    query: web::Query<EventsQuery>,
+) -> Result<impl Responder, AppError> {
+    let conn = pool.get()?;
+    let limit = query.limit.clamp(1, 1000);
+    let events = Event::list_after(query.after, limit, &conn)?;
+    let latest_id = Event::latest_id(&conn)?;
+    Ok(web::Json(EventsPage { events, latest_id }))
 }
 
 #[post("/api/repo")]

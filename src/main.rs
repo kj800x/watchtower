@@ -39,9 +39,9 @@ use crate::db::{SqliteConnectionCustomizer, migrations::migrate};
 use crate::poller::{RefreshRequester, refresh_requester, start_update_poller};
 use crate::prelude::*;
 use crate::web::{
-    create_repo, create_repo_form, get_hydrated_repo, get_repo, list_hydrated_repos, list_repos,
-    refresh_repo_now, repo_detail_fragment, repo_detail_page, repo_rows_fragment, repos_page,
-    set_repo_active, toggle_repo_active,
+    create_repo, create_repo_form, get_hydrated_repo, get_repo, list_events, list_hydrated_repos,
+    list_repos, lookup_repo, refresh_repo_now, repo_detail_fragment, repo_detail_page,
+    repo_rows_fragment, repos_page, set_repo_active, toggle_repo_active,
 };
 use watchtower::serve_static_file;
 
@@ -76,6 +76,8 @@ async fn start_http(
             .service(refresh_repo_now)
             .service(list_hydrated_repos)
             .service(get_hydrated_repo)
+            .service(lookup_repo)
+            .service(list_events)
             .service(repos_page)
             .service(repo_rows_fragment)
             .service(create_repo_form)
