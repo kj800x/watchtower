@@ -22,6 +22,11 @@ pub struct HydratedTag {
     pub id: u64,
     pub tag: String,
     pub active: bool,
+    /// The version the tag names (`15.11`, `1.27.3`), when it names one;
+    /// see `classify::parse_version`.
+    pub version: Option<String>,
+    /// What follows the first `-` of a versioned tag (`alpine`, `rc1`).
+    pub variant: Option<String>,
     pub first_seen_at: chrono::DateTime<chrono::Utc>,
     pub last_seen_at: chrono::DateTime<chrono::Utc>,
     pub history: Vec<HydratedTagHistory>,
@@ -198,8 +203,11 @@ pub fn hydrate(repo: Repo, conn: &PooledConnection<SqliteConnectionManager>) -> 
                 })
                 .collect_vec();
 
+            let parsed = crate::poller::classify::parse_version(&tag.tag);
             HydratedTag {
                 id: tag.id,
+                version: parsed.as_ref().map(|p| p.version.clone()),
+                variant: parsed.and_then(|p| p.variant),
                 tag: tag.tag,
                 active: tag.active,
                 first_seen_at: tag.first_seen_at,

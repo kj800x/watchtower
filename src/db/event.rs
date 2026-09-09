@@ -53,6 +53,12 @@ pub struct Event {
     pub registry: String,
     pub name: String,
     pub tag: String,
+    /// The version and variant the tag names, as `classify::parse_version`
+    /// reads it, so a consumer can match a range without parsing tags.
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub variant: Option<String>,
     pub kind: EventKind,
     /// The digest the tag points at after this event; absent for removals
     /// and for additions whose digest is not fetched yet.
@@ -78,12 +84,16 @@ const COLUMNS: &str =
 impl Event {
     fn from_row(row: &rusqlite::Row) -> AppResult<Self> {
         let kind: String = row.get(5)?;
+        let tag: String = row.get(4)?;
+        let parsed = crate::poller::classify::parse_version(&tag);
         Ok(Event {
             id: row.get(0)?,
             repo_id: row.get(1)?,
             registry: row.get(2)?,
             name: row.get(3)?,
-            tag: row.get(4)?,
+            version: parsed.as_ref().map(|p| p.version.clone()),
+            variant: parsed.and_then(|p| p.variant),
+            tag,
             kind: EventKind::parse(&kind).unwrap_or(EventKind::TagAdded),
             digest: row.get(6)?,
             previous_digest: row.get(7)?,

@@ -66,6 +66,43 @@ fn is_date_like(s: &str) -> bool {
     in_range(8..10, 23) && in_range(10..12, 59) && in_range(12..14, 59)
 }
 
+/// The version a tag names and the variant it names it for, when the tag
+/// is shaped like one. Consumers (cicd) resolve ranges over these instead
+/// of parsing raw tags, so the rules live here, next to the immutability
+/// ones.
+///
+/// After an optional leading `v`, the core (everything before the first
+/// `-`) must be two to four numeric components: `15.11`, `1.27.3`,
+/// `4.0.19.2979`. Whatever follows the first `-` is the variant
+/// (`alpine`, `java25`, `ls323`, `rc1`): the same version built another
+/// way, or a prerelease of it; telling those apart is the consumer's job.
+/// One-part tags (`18`), named tags (`latest`), glued cores
+/// (`10.11.8ubu2404`) and underscored ones (`5.2.3_v2.0.14`) name no
+/// version. `version` is the core as written, `v` removed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TagVersion {
+    pub version: String,
+    pub variant: Option<String>,
+}
+
+pub fn parse_version(tag: &str) -> Option<TagVersion> {
+    let stripped = tag.strip_prefix('v').unwrap_or(tag);
+    let (core, variant) = match stripped.split_once('-') {
+        Some((_, "")) => return None,
+        Some((core, variant)) => (core, Some(variant)),
+        None => (stripped, None),
+    };
+    let components: Vec<&str> = core.split('.').collect();
+    let numeric = |c: &&str| !c.is_empty() && c.bytes().all(|b| b.is_ascii_digit());
+    if !(2..=4).contains(&components.len()) || !components.iter().all(numeric) {
+        return None;
+    }
+    Some(TagVersion {
+        version: core.to_string(),
+        variant: variant.map(String::from),
+    })
+}
+
 /// Whether a tag names an exact release and can be assumed immutable.
 ///
 /// Immutable tags get their digest fetched once and cached forever; everything
@@ -105,7 +142,7 @@ fn is_digits_then_alnum(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_excluded, is_immutable};
+    use super::{TagVersion, is_excluded, is_immutable, parse_version};
 
     #[test]
     fn ci_artifact_tags_are_excluded() {
@@ -183,6 +220,63 @@ mod tests {
         assert!(!is_commit_ish("CB3CBEF1"));
         assert!(!is_commit_ish("defaced"));
         assert!(!is_commit_ish("gdefaced"));
+    }
+
+    fn version(version: &str, variant: Option<&str>) -> Option<TagVersion> {
+        Some(TagVersion {
+            version: version.to_string(),
+            variant: variant.map(String::from),
+        })
+    }
+
+    #[test]
+    fn versions_have_two_to_four_numeric_parts() {
+        assert_eq!(parse_version("1.27.3"), version("1.27.3", None));
+        assert_eq!(parse_version("v1.12.1"), version("1.12.1", None));
+        assert_eq!(parse_version("15.11"), version("15.11", None));
+        assert_eq!(parse_version("4.0.19.2979"), version("4.0.19.2979", None));
+        assert_eq!(parse_version("2021.12.07"), version("2021.12.07", None));
+        assert_eq!(parse_version("18"), None, "one part is a channel");
+        assert_eq!(parse_version("latest"), None);
+        assert_eq!(parse_version("java25"), None);
+        assert_eq!(parse_version("1.2.3.4.5"), None);
+        assert_eq!(parse_version("10.11.8ubu2404"), None, "glued distro");
+        assert_eq!(parse_version("5.2.3_v2.0.14"), None);
+        assert_eq!(parse_version("1..3"), None);
+        assert_eq!(parse_version("v"), None);
+        assert_eq!(parse_version(""), None);
+    }
+
+    #[test]
+    fn the_first_dash_starts_the_variant() {
+        assert_eq!(
+            parse_version("2.1.2-alpine"),
+            version("2.1.2", Some("alpine"))
+        );
+        assert_eq!(
+            parse_version("2026.9.0-java25"),
+            version("2026.9.0", Some("java25"))
+        );
+        assert_eq!(
+            parse_version("4.0.19.2979-ls323"),
+            version("4.0.19.2979", Some("ls323"))
+        );
+        assert_eq!(parse_version("1.2.3-rc1"), version("1.2.3", Some("rc1")));
+        assert_eq!(
+            parse_version("15.11-bookworm"),
+            version("15.11", Some("bookworm"))
+        );
+        assert_eq!(
+            parse_version("2026.9.0-java25-alpine"),
+            version("2026.9.0", Some("java25-alpine"))
+        );
+        assert_eq!(
+            parse_version("v1.53.1-enterprise-scratch"),
+            version("1.53.1", Some("enterprise-scratch"))
+        );
+        assert_eq!(parse_version("1.2.3-"), None);
+        assert_eq!(parse_version("-alpine"), None);
+        assert_eq!(parse_version("8-alpine"), None);
     }
 
     #[test]

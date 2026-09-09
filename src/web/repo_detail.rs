@@ -203,6 +203,12 @@ fn render_tag_row(
                 } @else {
                     span class="badge badge-floating" { "floating" }
                 }
+                @if let Some(parsed) = classify::parse_version(&tag.tag) {
+                    " " span class="cell-secondary" title="Version and variant as consumers read this tag" {
+                        (parsed.version)
+                        @if let Some(variant) = &parsed.variant { " · " (variant) }
+                    }
+                }
             }
             td {
                 @if let Some(h) = latest {
