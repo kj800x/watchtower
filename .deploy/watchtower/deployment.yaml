@@ -40,8 +40,11 @@ spec:
         - name: ghcr-kj800x
       volumes:
         - name: watchtower-data
-          nfs:
+          # Pinned to the NAS by the node selector, so the sqlite database is
+          # read from the local dataset rather than over NFS from the same
+          # node (which costs about 2 ms per query in lock round trips).
+          hostPath:
             path: /data/services/watchtower
-            server: 10.60.1.15
+            type: Directory
       nodeSelector:
         dedicated: nas
