@@ -39,8 +39,9 @@ use crate::db::{SqliteConnectionCustomizer, migrations::migrate};
 use crate::poller::{RefreshRequester, refresh_requester, start_update_poller};
 use crate::prelude::*;
 use crate::web::{
-    create_repo, create_repo_form, get_hydrated_repo, get_repo, list_events, list_hydrated_repos,
-    list_repos, lookup_repo, refresh_repo_now, repo_detail_fragment, repo_detail_page,
+    add_exclusion, add_exclusion_form, create_repo, create_repo_form, get_hydrated_repo, get_repo,
+    list_events, list_exclusions, list_hydrated_repos, list_repos, lookup_repo, refresh_repo_now,
+    remove_exclusion, remove_exclusion_form, repo_detail_fragment, repo_detail_page,
     repo_rows_fragment, repos_page, set_repo_active, toggle_repo_active,
 };
 use watchtower::serve_static_file;
@@ -78,12 +79,17 @@ async fn start_http(
             .service(get_hydrated_repo)
             .service(lookup_repo)
             .service(list_events)
+            .service(list_exclusions)
+            .service(add_exclusion)
+            .service(remove_exclusion)
             .service(repos_page)
             .service(repo_rows_fragment)
             .service(create_repo_form)
             .service(toggle_repo_active)
             .service(repo_detail_page)
             .service(repo_detail_fragment)
+            .service(add_exclusion_form)
+            .service(remove_exclusion_form)
             .service(serve_static_file!("htmx.min.js"))
             .service(serve_static_file!("idiomorph.min.js"))
             .service(serve_static_file!("idiomorph-ext.min.js"))

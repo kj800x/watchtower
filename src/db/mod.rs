@@ -8,6 +8,7 @@ pub mod repo;
 pub mod repo_state;
 pub mod tag;
 pub mod tag_history;
+pub mod version_exclusion;
 
 pub struct ExistenceResult {
     id: u64,

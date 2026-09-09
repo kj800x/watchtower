@@ -216,6 +216,13 @@ code,
   background: #fdedee;
 }
 
+.badge-excluded {
+  color: var(--warning-color);
+  border-color: #e7c66b;
+  background: #fff8c5;
+  cursor: help;
+}
+
 .status-dot {
   display: inline-block;
   width: 8px;
@@ -377,4 +384,23 @@ code,
   font-size: 12px;
   color: var(--secondary-text);
   margin-bottom: 2px;
+}
+
+/* Version exclusions */
+
+.exclusion-table {
+  margin-bottom: 12px;
+}
+
+.exclusion-form .exclusion-note {
+  flex: 1;
+}
+
+tr.tag-excluded td {
+  color: var(--secondary-text);
+}
+
+tr.tag-excluded td code:first-child {
+  text-decoration: line-through;
+  text-decoration-color: #c9b458;
 }
