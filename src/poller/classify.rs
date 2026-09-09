@@ -1,20 +1,69 @@
 /// Tags excluded from tracking entirely: never stored, never fetched.
 ///
-/// - `pr-*` / `commit-*`: per-PR and per-commit CI artifacts
+/// - `pr-*` / `commit-*` / `sha-*`: per-PR and per-commit CI artifacts
 /// - `sha256-*`: cosign signature/attestation/SBOM artifacts
 ///   (`sha256-<digest>.sig` and friends)
 /// - `nightly-*` and anything containing `unstable`: dated nightly/unstable
 ///   CI builds (linuxserver.io publishes thousands); the bare `nightly`
 ///   channel pointer is kept
 /// - `bionic-*`: distro-prefixed duplicates of the main tags
-/// - arch-prefixed tags (`amd64-*`, `arm64v8-*`, ...): single-arch
+/// - arch-prefixed or -suffixed tags (`amd64-*`, `*-arm64`, ...): single-arch
 ///   duplicates of the multi-arch tags
+/// - `version-*` / `*-version-*`: linuxserver.io's mutable alias of the
+///   newest `-lsN` build for an upstream version (`develop-version-4.0.9.2513`
+///   duplicates `develop-4.0.9.2513-ls100`)
+/// - tags carrying a commit hash or CI run id segment (`main-cb3cbef`,
+///   `heads-branch-0-g44452566d`, `13.1.0-25893932881-ubuntu`): per-commit
+///   branch builds; date-shaped digit runs (`20200413`) are not hashes
 pub fn is_excluded(tag: &str) -> bool {
     const EXCLUDED_PREFIXES: &[&str] = &[
-        "pr-", "commit-", "sha256-", "nightly-", "bionic-", "amd64-", "arm64v8-", "arm64v6-",
-        "arm32v7-", "arm32v6-", "armhf-", "i386-", "ppc64le-", "s390x-", "riscv64-",
+        "pr-", "commit-", "sha-", "sha256-", "nightly-", "bionic-", "version-",
     ];
-    EXCLUDED_PREFIXES.iter().any(|p| tag.starts_with(p)) || tag.contains("unstable")
+    const ARCH: &[&str] = &[
+        "amd64", "arm64", "arm", "armv6", "armv7", "arm64v8", "arm32v6", "arm32v7", "armhf",
+        "i386", "386", "ppc64le", "s390x", "riscv64",
+    ];
+    if EXCLUDED_PREFIXES.iter().any(|p| tag.starts_with(p)) || tag.contains("unstable") {
+        return true;
+    }
+    if ARCH
+        .iter()
+        .any(|a| tag.starts_with(a) && tag[a.len()..].starts_with('-'))
+    {
+        return true;
+    }
+    tag.split('-')
+        .any(|seg| ARCH.contains(&seg) || seg == "version" || is_commit_ish(seg))
+}
+
+/// A dash-delimited segment that looks like a commit hash or CI run id: 7 to
+/// 40 hex characters, optionally `git describe`-style `g`-prefixed. Pure
+/// digit runs that form a valid date (`20200413`, `202004131200`) are
+/// build dates, not hashes.
+fn is_commit_ish(seg: &str) -> bool {
+    let hex = seg.strip_prefix('g').unwrap_or(seg);
+    (7..=40).contains(&hex.len())
+        && hex
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        && hex.bytes().any(|b| b.is_ascii_digit())
+        && !is_date_like(hex)
+}
+
+/// `YYYYMMDD` optionally followed by `HH`, `HHMM` or `HHMMSS`, with every
+/// component in range.
+fn is_date_like(s: &str) -> bool {
+    if !matches!(s.len(), 8 | 10 | 12 | 14) || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let num = |range: std::ops::Range<usize>| s[range].parse::<u32>().unwrap_or(u32::MAX);
+    let (year, month, day) = (num(0..4), num(4..6), num(6..8));
+    if !(1990..=2099).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return false;
+    }
+    let in_range =
+        |range: std::ops::Range<usize>, max: u32| range.end > s.len() || num(range) <= max;
+    in_range(8..10, 23) && in_range(10..12, 59) && in_range(12..14, 59)
 }
 
 /// Whether a tag names an exact release and can be assumed immutable.
@@ -74,12 +123,66 @@ mod tests {
         assert!(is_excluded("20201102.25-unstable-ls107"));
         assert!(is_excluded("version-20201102.25-unstable"));
         assert!(is_excluded("bionic-10.6.4-1-ls10"));
+        assert!(is_excluded("sha-f2c9d2f"));
+        assert!(is_excluded("main-cb3cbef"));
+        assert!(is_excluded("main-cb3cbef-arm64"));
+        assert!(is_excluded("k99-5206e3a"));
+        assert!(is_excluded("groupcache-6f1c2ab-WIP-2"));
+        assert!(is_excluded(
+            "heads-storage-downsampling-per-tenant-0-gd596e1475"
+        ));
+        assert!(is_excluded("13.1.0-25893932881-ubuntu"));
+        assert!(is_excluded("dependabot-uv-dev-utilities-minor-da626189b9"));
+        assert!(is_excluded("latest-arm64"));
+        assert!(is_excluded("helm-loki-5.44.1-arm"));
+        assert!(is_excluded("v1.53.1-enterprise-ppc64le"));
+        assert!(is_excluded("v1.53.1-386"));
+        assert!(is_excluded("version-12.0ubu2604"));
+        assert!(is_excluded("develop-version-4.0.9.2513"));
+        assert!(is_excluded("v4-version-4.0.0.247"));
+        assert!(is_excluded("libtorrentv1-version-release-5.2.0_v1.2.20"));
         assert!(!is_excluded("latest"));
         assert!(!is_excluded("nightly"));
         assert!(!is_excluded("v3.41.3"));
         assert!(!is_excluded("10.8.13-ls249"));
         assert!(!is_excluded("prod"));
         assert!(!is_excluded("commitment"));
+        assert!(!is_excluded("20200413"));
+        assert!(!is_excluded("2021.9.0-openj9-11"));
+        assert!(!is_excluded("develop-4.0.9.2513-ls100"));
+        assert!(!is_excluded("6.4.4-nightly"));
+        assert!(!is_excluded("13.1.0-boringcrypto"));
+        assert!(!is_excluded("v1.53.1-enterprise-scratch"));
+        assert!(!is_excluded(
+            "4.4.0202012141920-7145-c01d28a47ubuntu18.04.1"
+        ));
+        assert!(!is_excluded("2.0.0.5344-ls9"));
+        assert!(!is_excluded("armada"));
+        assert!(!is_excluded("shadow"));
+        assert!(!is_excluded("openj9-nightly"));
+    }
+
+    #[test]
+    fn date_shaped_digit_runs_are_not_hashes() {
+        use super::{is_commit_ish, is_date_like};
+        assert!(is_date_like("20200413"));
+        assert!(is_date_like("2024030717"));
+        assert!(is_date_like("202403071730"));
+        assert!(is_date_like("20240307173059"));
+        assert!(!is_date_like("20201345"));
+        assert!(!is_date_like("2024030725"));
+        assert!(!is_date_like("25893932881"));
+        assert!(!is_date_like("1234567"));
+        assert!(!is_commit_ish("20200413"));
+        assert!(is_commit_ish("25893932881"));
+        assert!(is_commit_ish("cb3cbef"));
+        assert!(is_commit_ish("g44452566d"));
+        assert!(!is_commit_ish("g"));
+        assert!(!is_commit_ish("abcdef"));
+        assert!(!is_commit_ish("698b54o"));
+        assert!(!is_commit_ish("CB3CBEF1"));
+        assert!(!is_commit_ish("defaced"));
+        assert!(!is_commit_ish("gdefaced"));
     }
 
     #[test]

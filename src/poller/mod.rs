@@ -39,8 +39,11 @@ const REFRESH_INTERVAL: chrono::Duration = chrono::Duration::hours(6);
 const SCHEDULER_TICK: Duration = Duration::from_secs(60);
 /// Tag list page size requested from the registry.
 const TAG_PAGE_SIZE: usize = 100;
-/// Hard cap on tag list pages per refresh, as a runaway guard.
-const MAX_TAG_PAGES: usize = 200;
+/// Hard cap on tag list pages per refresh, as a runaway guard. Docker Hub
+/// pages lexically, so hitting the cap silently drops the tail of the
+/// alphabet; it must sit well above the largest tracked repo (grafana/loki
+/// is ~27k tags).
+const MAX_TAG_PAGES: usize = 1000;
 /// Base delay before retrying a failing repo; doubles per consecutive
 /// failure, capped at REFRESH_INTERVAL.
 const BACKOFF_BASE: chrono::Duration = chrono::Duration::minutes(1);
@@ -138,12 +141,13 @@ async fn refresh_and_record(
                 .inc();
             RepoState::record_success(repo.id, started_at, conn)?;
             log::info!(
-                "Refreshed {}/{}: {} tags ({} new, {} excluded), {} digests fetched ({} failed, {} deferred), {} tags deactivated, {} events{}",
+                "Refreshed {}/{}: {} tags ({} new, {} excluded, {} purged), {} digests fetched ({} failed, {} deferred), {} tags deactivated, {} events{}",
                 repo.registry,
                 repo.name,
                 summary.tags_seen,
                 summary.tags_new,
                 summary.tags_excluded,
+                summary.tags_purged,
                 summary.digests_fetched,
                 summary.digests_failed,
                 summary.digests_deferred,
@@ -202,6 +206,7 @@ fn is_due(state: Option<&RepoState>, now: DateTime<Utc>) -> bool {
 
 struct RefreshSummary {
     tags_excluded: usize,
+    tags_purged: usize,
     tags_seen: usize,
     tags_new: usize,
     digests_fetched: usize,
@@ -232,6 +237,7 @@ async fn refresh_repo(
 
     let mut summary = RefreshSummary {
         tags_excluded: total - tags.len(),
+        tags_purged: 0,
         tags_seen: tags.len(),
         tags_new: 0,
         digests_fetched: 0,
@@ -252,6 +258,11 @@ async fn refresh_repo(
     // Floating tags are re-fetched every refresh; immutable tags only need
     // their digest resolved once, and the backlog of never-resolved ones is
     // drained on a per-pass budget, floating first.
+    // Tags stored before an exclusion rule was added are dropped outright,
+    // not deactivated: they were never interesting, so their disappearance
+    // is not an event.
+    summary.tags_purged = Tag::purge_matching(repo.id, classify::is_excluded, conn)?;
+
     let mut floating: Vec<(u64, String)> = Vec::new();
     let mut backfill: Vec<(u64, String)> = Vec::new();
 

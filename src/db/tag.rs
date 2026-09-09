@@ -65,6 +65,30 @@ impl Tag {
         Ok(rows.collect::<Result<Vec<String>, _>>()?)
     }
 
+    /// Delete every stored tag of `repo_id` whose name matches `predicate`,
+    /// along with its digest history. Used to drop tags that a newly added
+    /// exclusion rule would never have stored. Returns the number deleted.
+    pub fn purge_matching(
+        repo_id: u64,
+        predicate: impl Fn(&str) -> bool,
+        conn: &PooledConnection<SqliteConnectionManager>,
+    ) -> AppResult<usize> {
+        let mut stmt = conn.prepare("SELECT id, tag FROM tag WHERE repo_id = ?1")?;
+        let doomed: Vec<u64> = stmt
+            .query_map(params![repo_id], |row| {
+                Ok((row.get::<usize, u64>(0)?, row.get::<usize, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .filter(|(_, name)| predicate(name))
+            .map(|(id, _)| id)
+            .collect();
+        for id in &doomed {
+            conn.execute("DELETE FROM tag_history WHERE tag_id = ?1", params![id])?;
+            conn.execute("DELETE FROM tag WHERE id = ?1", params![id])?;
+        }
+        Ok(doomed.len())
+    }
+
     pub fn history(
         &self,
         conn: &PooledConnection<SqliteConnectionManager>,
