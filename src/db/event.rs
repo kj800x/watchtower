@@ -14,7 +14,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-use crate::error::AppResult;
+use crate::{db::version_exclusion::VersionExclusion, error::AppResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -139,6 +139,43 @@ impl Event {
         Ok(events)
     }
 
+    /// The feed as consumers read it: like [`Event::list_after`], minus
+    /// events of tags whose version an admin has excluded (see
+    /// `db/version_exclusion.rs`). Ids stay sparse rather than renumbered,
+    /// so a cursor works the same way; the scan continues past skipped
+    /// rows until `limit` events are found or the table ends.
+    pub fn feed(
+        after: u64,
+        limit: usize,
+        conn: &PooledConnection<SqliteConnectionManager>,
+    ) -> AppResult<Vec<Self>> {
+        let exclusions = VersionExclusion::all_by_repo(conn)?;
+        if exclusions.is_empty() {
+            return Self::list_after(after, limit, conn);
+        }
+        let mut events = Vec::with_capacity(limit);
+        let mut cursor = after;
+        loop {
+            let batch = Self::list_after(cursor, limit, conn)?;
+            let exhausted = batch.len() < limit;
+            for event in batch {
+                cursor = event.id;
+                let excluded = exclusions
+                    .get(&event.repo_id)
+                    .is_some_and(|set| set.excludes(&event.tag));
+                if !excluded {
+                    events.push(event);
+                    if events.len() == limit {
+                        return Ok(events);
+                    }
+                }
+            }
+            if exhausted {
+                return Ok(events);
+            }
+        }
+    }
+
     /// The newest event id, or 0 when there are none. A consumer that wants
     /// to start "from now" uses this as its first cursor.
     pub fn latest_id(conn: &PooledConnection<SqliteConnectionManager>) -> AppResult<u64> {
@@ -238,6 +275,78 @@ mod tests {
         assert_eq!(
             Event::recent_for_repo(repo.id, 1, &conn).unwrap()[0].id,
             second
+        );
+    }
+
+    #[test]
+    fn the_feed_skips_excluded_versions_without_stalling_the_cursor() {
+        let pool = pool();
+        let conn = pool.get().unwrap();
+        let repo = Repo::upsert(
+            &RepoEgg {
+                registry: "lscr.io".into(),
+                name: "linuxserver/sonarr".into(),
+            },
+            &conn,
+        )
+        .unwrap();
+        let now = chrono::Utc::now();
+        let record = |tag: &str| {
+            Event::record(
+                &NewEvent {
+                    repo_id: repo.id,
+                    tag: tag.into(),
+                    kind: EventKind::TagAdded,
+                    digest: None,
+                    previous_digest: None,
+                },
+                now,
+                &conn,
+            )
+            .unwrap()
+        };
+        // Three excluded events in a row, wider than the page, then a real one.
+        let bogus: Vec<u64> = (5..8)
+            .map(|n| record(&format!("5.14-2.0.0.5344-ls{n}")))
+            .collect();
+        let real = record("4.0.19.2979-ls323");
+        let latest = record("latest");
+        VersionExclusion::add(repo.id, "5.14", None, now, &conn).unwrap();
+
+        let page = Event::feed(0, 2, &conn).unwrap();
+        assert_eq!(
+            page.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![real, latest],
+            "the page is filled from past the excluded run"
+        );
+        assert_eq!(Event::feed(0, 1, &conn).unwrap()[0].id, real);
+        assert!(Event::feed(latest, 10, &conn).unwrap().is_empty());
+        assert_eq!(Event::list_after(0, 10, &conn).unwrap().len(), 5);
+        assert_eq!(Event::list_after(0, 10, &conn).unwrap()[0].id, bogus[0]);
+        let other = Repo::upsert(
+            &RepoEgg {
+                registry: "lscr.io".into(),
+                name: "linuxserver/radarr".into(),
+            },
+            &conn,
+        )
+        .unwrap();
+        let elsewhere = Event::record(
+            &NewEvent {
+                repo_id: other.id,
+                tag: "5.14".into(),
+                kind: EventKind::TagAdded,
+                digest: None,
+                previous_digest: None,
+            },
+            now,
+            &conn,
+        )
+        .unwrap();
+        assert_eq!(
+            Event::feed(latest, 10, &conn).unwrap()[0].id,
+            elsewhere,
+            "rules are per repo"
         );
     }
 }

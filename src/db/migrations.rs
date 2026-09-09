@@ -61,6 +61,19 @@ pub fn migrate(mut conn: PooledConnection<SqliteConnectionManager>) -> AppResult
           );
           CREATE INDEX event_repo_id_id ON event (repo_id, id DESC);
       "#}),
+        // Versions an admin has ruled out of version matching. See
+        // db/version_exclusion.rs.
+        M::up(indoc! { r#"
+          CREATE TABLE version_exclusion (
+              id INTEGER PRIMARY KEY NOT NULL,
+              repo_id INTEGER NOT NULL,
+              version TEXT NOT NULL,
+              note TEXT,
+              created_at INTEGER NOT NULL,
+              FOREIGN KEY(repo_id) REFERENCES repo(id),
+              UNIQUE (repo_id, version)
+          );
+      "#}),
     ]);
 
     conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
