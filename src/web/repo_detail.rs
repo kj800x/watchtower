@@ -291,9 +291,10 @@ fn render_tag_row(
                     span class="badge badge-floating" { "floating" }
                 }
                 @if let Some(parsed) = &parsed {
-                    " " span class="cell-secondary" title="Version and variant as consumers read this tag" {
+                    " " span class="cell-secondary" title="Version, variant and build as consumers read this tag" {
                         (parsed.version)
                         @if let Some(variant) = &parsed.variant { " · " (variant) }
+                        @if let Some(build) = &parsed.build { " +" (build) }
                     }
                 }
             }

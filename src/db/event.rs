@@ -59,6 +59,8 @@ pub struct Event {
     pub version: Option<String>,
     #[serde(default)]
     pub variant: Option<String>,
+    #[serde(default)]
+    pub build: Option<String>,
     pub kind: EventKind,
     /// The digest the tag points at after this event; absent for removals
     /// and for additions whose digest is not fetched yet.
@@ -92,7 +94,8 @@ impl Event {
             registry: row.get(2)?,
             name: row.get(3)?,
             version: parsed.as_ref().map(|p| p.version.clone()),
-            variant: parsed.and_then(|p| p.variant),
+            variant: parsed.as_ref().and_then(|p| p.variant.clone()),
+            build: parsed.and_then(|p| p.build),
             tag,
             kind: EventKind::parse(&kind).unwrap_or(EventKind::TagAdded),
             digest: row.get(6)?,
