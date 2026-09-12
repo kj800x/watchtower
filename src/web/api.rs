@@ -32,8 +32,8 @@ pub struct HydratedTag {
     /// `12.0ubu2604-ls48`): what linuxserver.io glues on and its build
     /// number. Distinguishes rebuilds of one version; never a variant.
     pub build: Option<String>,
-    /// Whether an admin has excluded this tag's version from version
-    /// matching. Excluded tags are left out of responses unless asked for
+    /// Whether this tag's version is excluded from version matching, by an
+    /// admin's rule or a publisher rule (`classify::publisher_alias`). Excluded tags are left out of responses unless asked for
     /// with `include_excluded=true`, so this is false in the default view.
     pub excluded: bool,
     pub first_seen_at: chrono::DateTime<chrono::Utc>,
@@ -290,7 +290,7 @@ pub fn hydrate(
     conn: &PooledConnection<SqliteConnectionManager>,
 ) -> AppResult<HydratedRepo> {
     let exclusions = VersionExclusion::for_repo(repo.id, conn)?;
-    let excluded_set = ExclusionSet::new(exclusions.clone());
+    let excluded_set = ExclusionSet::new(&repo.name, exclusions.clone());
     let mut tag = Vec::new();
     for t in repo.tags(conn)? {
         let excluded = excluded_set.excludes(&t.tag);

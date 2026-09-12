@@ -93,6 +93,9 @@ fn render_exclusions(
                 code { "/api/lookup" } " and " code { "/api/events" }
                 ", so consumers never pick them. A trailing " code { ".*" } " excludes a whole family."
             }
+            @if let Some(why) = classify::publisher_alias(&repo.name, "0.0.0") {
+                p class="cell-secondary" { "Built-in for this publisher: " (why) "." }
+            }
             @if !rules.is_empty() {
                 table class="data-table exclusion-table" {
                     thead { tr { th { "Version" } th { "Note" } th { "Added" } th {} } }
@@ -150,7 +153,7 @@ fn render_repo_detail(
     let failures = state.as_ref().map(|s| s.consecutive_failures).unwrap_or(0);
     let last_error = state.as_ref().and_then(|s| s.last_error.clone());
 
-    let exclusions = VersionExclusion::set_for_repo(repo.id, conn)?;
+    let exclusions = VersionExclusion::set_for_repo(repo, conn)?;
     let excluded_count = tags.iter().filter(|t| exclusions.excludes(&t.tag)).count();
 
     let mut tag_rows = Vec::new();
@@ -273,15 +276,14 @@ fn render_tag_row(
     let rule = exclusions.rule_for(&tag.tag);
 
     Ok(html! {
-        tr class=[rule.map(|_| "tag-excluded")] {
+        tr class=[rule.as_ref().map(|_| "tag-excluded")] {
             td {
                 code { (tag.tag) }
                 @if !tag.active {
                     " " span class="badge badge-error" title="No longer present in the registry's tag list" { "gone" }
                 }
-                @if let Some(rule) = rule {
-                    " " span class="badge badge-excluded"
-                        title=(format!("Excluded by rule {}{}", rule.version, rule.note.as_deref().map(|n| format!(": {n}")).unwrap_or_default())) { "excluded" }
+                @if let Some(rule) = &rule {
+                    " " span class="badge badge-excluded" title=(rule.describe()) { "excluded" }
                 }
             }
             td {
