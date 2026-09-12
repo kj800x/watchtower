@@ -334,7 +334,7 @@ mod tests {
             &conn,
         )
         .unwrap();
-        let elsewhere = Event::record(
+        let alias = Event::record(
             &NewEvent {
                 repo_id: other.id,
                 tag: "5.14".into(),
@@ -346,10 +346,23 @@ mod tests {
             &conn,
         )
         .unwrap();
+        let elsewhere = Event::record(
+            &NewEvent {
+                repo_id: other.id,
+                tag: "5.14-ls1".into(),
+                kind: EventKind::TagAdded,
+                digest: None,
+                previous_digest: None,
+            },
+            now,
+            &conn,
+        )
+        .unwrap();
         assert_eq!(
             Event::feed(latest, 10, &conn).unwrap()[0].id,
             elsewhere,
-            "rules are per repo"
+            "rules are per repo; the publisher's alias rule applies everywhere"
         );
+        assert!(Event::list_after(latest, 10, &conn).unwrap()[0].id == alias);
     }
 }

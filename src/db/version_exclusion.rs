@@ -11,6 +11,11 @@
 //!
 //! A rule is a version as `classify::parse_version` reads it (`20.04.1`),
 //! or a prefix with a trailing `*` (`14.3.*`) for a whole family of them.
+//!
+//! Some publishers need no admin: `classify::publisher_alias` knows that a
+//! linuxserver.io tag without a build number is an alias, not a release.
+//! An [`ExclusionSet`] applies both, so every consumer-facing view asks it
+//! rather than the rules alone.
 
 use std::collections::HashMap;
 
@@ -20,6 +25,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    db::repo::Repo,
     error::{AppError, AppResult},
     poller::classify,
 };
@@ -34,26 +40,67 @@ pub struct VersionExclusion {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// The rules of one repo, ready to test tags against.
+/// The rules of one repo plus what its publisher's tags mean, ready to
+/// test tags against.
 #[derive(Debug, Clone, Default)]
 pub struct ExclusionSet {
+    /// The repo name (`linuxserver/sonarr`), which decides the publisher.
+    name: String,
     rules: Vec<VersionExclusion>,
 }
 
+/// Why a tag is excluded.
+#[derive(Debug, Clone)]
+pub enum Exclusion<'a> {
+    /// An admin's rule.
+    Rule(&'a VersionExclusion),
+    /// A built-in publisher rule, with its explanation.
+    Alias(&'static str),
+}
+
+impl Exclusion<'_> {
+    /// One line for a person, naming the rule.
+    pub fn describe(&self) -> String {
+        match self {
+            Exclusion::Rule(rule) => format!(
+                "Excluded by rule {}{}",
+                rule.version,
+                rule.note
+                    .as_deref()
+                    .map(|n| format!(": {n}"))
+                    .unwrap_or_default()
+            ),
+            Exclusion::Alias(why) => format!("Excluded: {why}"),
+        }
+    }
+}
+
 impl ExclusionSet {
-    pub fn new(rules: Vec<VersionExclusion>) -> Self {
-        Self { rules }
+    pub fn new(name: &str, rules: Vec<VersionExclusion>) -> Self {
+        Self {
+            name: name.to_string(),
+            rules,
+        }
     }
 
-    /// The rule that excludes `tag`, if any. A tag that names no version
-    /// is never excluded: nothing matches it as a version anyway.
-    pub fn rule_for(&self, tag: &str) -> Option<&VersionExclusion> {
+    /// What excludes `tag`, if anything: an admin's rule first, else the
+    /// publisher's. A tag that names no version is never excluded: nothing
+    /// matches it as a version anyway.
+    pub fn rule_for(&self, tag: &str) -> Option<Exclusion<'_>> {
         let parsed = classify::parse_version(tag)?;
-        self.rules.iter().find(|r| r.matches(&parsed.version))
+        if let Some(rule) = self.rules.iter().find(|r| r.matches(&parsed.version)) {
+            return Some(Exclusion::Rule(rule));
+        }
+        classify::publisher_alias(&self.name, tag).map(Exclusion::Alias)
     }
 
     pub fn excludes(&self, tag: &str) -> bool {
         self.rule_for(tag).is_some()
+    }
+
+    /// Whether this set can exclude anything at all.
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty() && classify::publisher_alias(&self.name, "0.0.0").is_none()
     }
 }
 
@@ -109,14 +156,17 @@ impl VersionExclusion {
     }
 
     pub fn set_for_repo(
-        repo_id: u64,
+        repo: &Repo,
         conn: &PooledConnection<SqliteConnectionManager>,
     ) -> AppResult<ExclusionSet> {
-        Ok(ExclusionSet::new(Self::for_repo(repo_id, conn)?))
+        Ok(ExclusionSet::new(
+            &repo.name,
+            Self::for_repo(repo.id, conn)?,
+        ))
     }
 
-    /// Every repo's rules, keyed by repo id, for filtering a feed that
-    /// spans repos in one pass.
+    /// Every repo's exclusions, keyed by repo id, for filtering a feed that
+    /// spans repos in one pass. Repos that can exclude nothing are absent.
     pub fn all_by_repo(
         conn: &PooledConnection<SqliteConnectionManager>,
     ) -> AppResult<HashMap<u64, ExclusionSet>> {
@@ -129,9 +179,13 @@ impl VersionExclusion {
             let rule = Self::from_row(row)?;
             grouped.entry(rule.repo_id).or_default().push(rule);
         }
-        Ok(grouped
+        Ok(Repo::all(conn)?
             .into_iter()
-            .map(|(repo_id, rules)| (repo_id, ExclusionSet::new(rules)))
+            .map(|repo| {
+                let rules = grouped.remove(&repo.id).unwrap_or_default();
+                (repo.id, ExclusionSet::new(&repo.name, rules))
+            })
+            .filter(|(_, set)| !set.is_empty())
             .collect())
     }
 
@@ -178,11 +232,7 @@ impl VersionExclusion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{
-        SqliteConnectionCustomizer,
-        migrations::migrate,
-        repo::{Repo, RepoEgg},
-    };
+    use crate::db::{SqliteConnectionCustomizer, migrations::migrate, repo::RepoEgg};
     use r2d2::Pool;
 
     fn pool() -> Pool<SqliteConnectionManager> {
@@ -207,7 +257,7 @@ mod tests {
 
     #[test]
     fn exact_rules_match_the_parsed_version_of_a_tag() {
-        let set = ExclusionSet::new(vec![rule("5.14"), rule("20.04.1")]);
+        let set = ExclusionSet::new("x/y", vec![rule("5.14"), rule("20.04.1")]);
         assert!(set.excludes("5.14"));
         assert!(
             set.excludes("5.14-2.0.0.5344-ls9"),
@@ -225,7 +275,7 @@ mod tests {
 
     #[test]
     fn wildcard_rules_match_a_prefix() {
-        let set = ExclusionSet::new(vec![rule("14.3.*")]);
+        let set = ExclusionSet::new("x/y", vec![rule("14.3.*")]);
         assert!(set.excludes("14.3.9.99202110311443-7435-01519b5e7ubuntu20.04.1-ls166"));
         assert!(set.excludes("14.3.0"));
         assert!(!set.excludes("14.30.1"));
@@ -233,8 +283,31 @@ mod tests {
             !set.excludes("14.3"),
             "a prefix rule needs the dot after it"
         );
-        assert!(ExclusionSet::new(vec![rule("14.*")]).excludes("14.3"));
-        assert!(!ExclusionSet::new(vec![rule("14.*")]).excludes("140.3"));
+        assert!(ExclusionSet::new("x/y", vec![rule("14.*")]).excludes("14.3"));
+        assert!(!ExclusionSet::new("x/y", vec![rule("14.*")]).excludes("140.3"));
+    }
+
+    #[test]
+    fn a_linuxserver_repo_excludes_its_aliases_without_a_rule() {
+        let sonarr = ExclusionSet::new("linuxserver/sonarr", vec![rule("5.14")]);
+        assert!(sonarr.excludes("4.0.19"));
+        assert!(sonarr.excludes("4.0.19-develop"));
+        assert!(!sonarr.excludes("4.0.19.2979-ls324"));
+        assert!(!sonarr.excludes("latest"));
+        assert!(
+            matches!(sonarr.rule_for("5.14"), Some(Exclusion::Rule(_))),
+            "an admin's rule is named ahead of the publisher's"
+        );
+        assert!(matches!(
+            sonarr.rule_for("4.0.19"),
+            Some(Exclusion::Alias(_))
+        ));
+        assert!(!sonarr.is_empty());
+        assert!(ExclusionSet::new("linuxserver/jellyfin", vec![]).excludes("10.11.11"));
+        assert!(!ExclusionSet::new("linuxserver/jellyfin", vec![]).is_empty());
+        let postgres = ExclusionSet::new("library/postgres", vec![]);
+        assert!(!postgres.excludes("15.11"));
+        assert!(postgres.is_empty());
     }
 
     #[test]
@@ -294,6 +367,10 @@ mod tests {
         let by_repo = VersionExclusion::all_by_repo(&conn).unwrap();
         assert_eq!(by_repo.len(), 2);
         assert!(by_repo[&repo.id].excludes("5.14-2.0.0.5344-ls9"));
+        assert!(
+            by_repo[&other.id].excludes("6.3.0"),
+            "publisher aliases apply in the feed too"
+        );
 
         assert!(VersionExclusion::remove(first.id, &conn).unwrap());
         assert!(!VersionExclusion::remove(first.id, &conn).unwrap());

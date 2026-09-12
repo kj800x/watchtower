@@ -162,6 +162,28 @@ fn is_ls_build(s: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// Why a publisher's tag is not a release even though it names a version,
+/// or `None` when it is one (or the publisher is not known). These are
+/// built-in counterparts of the admin's version exclusions: the tags stay
+/// tracked but consumers never see them.
+///
+/// linuxserver.io publishes every build as `<version>-lsNN` and documents
+/// that as the static tag. Beside it goes a "pseudo semver" alias, `4.0.19`
+/// or `4.0.19-develop`, retagged on each rebuild, which linuxserver calls
+/// unsupported and has stopped publishing for two-part upstream versions
+/// (Jellyfin 12). On a `linuxserver/*` repo, a versioned tag without a
+/// build number is that alias.
+pub fn publisher_alias(name: &str, tag: &str) -> Option<&'static str> {
+    if !name.starts_with("linuxserver/") {
+        return None;
+    }
+    let parsed = parse_version(tag)?;
+    parsed.build.is_none().then_some(LINUXSERVER_ALIAS)
+}
+
+pub const LINUXSERVER_ALIAS: &str = "linuxserver.io alias: releases are the -lsNN builds; \
+    a versioned tag without one is the unsupported pseudo-semver tag, retagged on every rebuild";
+
 /// Whether a tag names an exact release and can be assumed immutable.
 ///
 /// Immutable tags get their digest fetched once and cached forever; everything
@@ -385,6 +407,35 @@ mod tests {
         assert!(is_immutable("v0.14.9"));
         assert!(is_immutable("10.10.0ubu2404-ls38"));
         assert!(is_immutable("10.6.4-1-ls10"));
+    }
+
+    #[test]
+    fn linuxserver_versioned_tags_without_a_build_are_aliases() {
+        use super::publisher_alias;
+        for alias in [
+            "4.0.19",
+            "4.0.19-develop",
+            "10.11.11",
+            "5.2.3-libtorrentv1",
+            "2.5.2",
+        ] {
+            assert!(
+                publisher_alias("linuxserver/sonarr", alias).is_some(),
+                "{alias}"
+            );
+        }
+        for real in [
+            "4.0.19.2979-ls324",
+            "12.0ubu2604-ls48",
+            "5.2.3_v2.0.14-ls475",
+            "latest",
+            "develop",
+            "nightly",
+        ] {
+            assert_eq!(publisher_alias("linuxserver/sonarr", real), None, "{real}");
+        }
+        assert_eq!(publisher_alias("library/postgres", "15.11"), None);
+        assert_eq!(publisher_alias("linuxserverx/foo", "1.2.3"), None);
     }
 
     #[test]
