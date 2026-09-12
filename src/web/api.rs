@@ -28,6 +28,10 @@ pub struct HydratedTag {
     pub version: Option<String>,
     /// What follows the first `-` of a versioned tag (`alpine`, `rc1`).
     pub variant: Option<String>,
+    /// Build metadata split off the version (`ubu2604.ls48` for
+    /// `12.0ubu2604-ls48`): what linuxserver.io glues on and its build
+    /// number. Distinguishes rebuilds of one version; never a variant.
+    pub build: Option<String>,
     /// Whether an admin has excluded this tag's version from version
     /// matching. Excluded tags are left out of responses unless asked for
     /// with `include_excluded=true`, so this is false in the default view.
@@ -307,7 +311,8 @@ pub fn hydrate(
         tag.push(HydratedTag {
             id: t.id,
             version: parsed.as_ref().map(|p| p.version.clone()),
-            variant: parsed.and_then(|p| p.variant),
+            variant: parsed.as_ref().and_then(|p| p.variant.clone()),
+            build: parsed.and_then(|p| p.build),
             excluded,
             tag: t.tag,
             active: t.active,

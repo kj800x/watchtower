@@ -66,41 +66,100 @@ fn is_date_like(s: &str) -> bool {
     in_range(8..10, 23) && in_range(10..12, 59) && in_range(12..14, 59)
 }
 
-/// The version a tag names and the variant it names it for, when the tag
-/// is shaped like one. Consumers (cicd) resolve ranges over these instead
-/// of parsing raw tags, so the rules live here, next to the immutability
-/// ones.
+/// The version a tag names, the variant it names it for, and the build it
+/// came from, when the tag is shaped like one. Consumers (cicd) resolve
+/// ranges over these instead of parsing raw tags, so the rules live here,
+/// next to the immutability ones.
 ///
 /// After an optional leading `v`, the core (everything before the first
 /// `-`) must be two to four numeric components: `15.11`, `1.27.3`,
 /// `4.0.19.2979`. Whatever follows the first `-` is the variant
-/// (`alpine`, `java25`, `ls323`, `rc1`): the same version built another
-/// way, or a prerelease of it; telling those apart is the consumer's job.
-/// One-part tags (`18`), named tags (`latest`), glued cores
-/// (`10.11.8ubu2404`) and underscored ones (`5.2.3_v2.0.14`) name no
-/// version. `version` is the core as written, `v` removed.
+/// (`alpine`, `java25`, `rc1`): the same version built another way, or a
+/// prerelease of it; telling those apart is the consumer's job. One-part
+/// tags (`18`) and named tags (`latest`) name no version.
+///
+/// linuxserver.io tags end in a build number, `-ls48`, and glue whatever
+/// upstream put in its package version onto the core: `12.0ubu2604-ls48`
+/// (Jellyfin's deb is `12.0+ubu2604`), `5.2.3_v2.0.14-ls475` (qbittorrent
+/// plus its libtorrent). Both the glue and the build number are semver
+/// build metadata, not a variant: `12.0ubu2604-ls48` is version `12.0`
+/// with build `ubu2604.ls48` and no variant, so a range picks it, and
+/// `10.6.4-1-ls90` is version `10.6.4`, variant `1`, build `ls90`. The
+/// glue is read only when a build number vouches for the tag's shape;
+/// without one `10.11.8ubu2404` names no version, the same as an
+/// underscored `5.2.3_v2.0.14`. `version` is the core as written, `v`
+/// removed and glue split off.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct TagVersion {
     pub version: String,
     pub variant: Option<String>,
+    /// Dot-separated build identifiers (`ls48`, `ubu2604.ls48`,
+    /// `v2.0.14.ls475`), as semver would write them after a `+`.
+    pub build: Option<String>,
 }
 
 pub fn parse_version(tag: &str) -> Option<TagVersion> {
     let stripped = tag.strip_prefix('v').unwrap_or(tag);
-    let (core, variant) = match stripped.split_once('-') {
+    let (core, rest) = match stripped.split_once('-') {
         Some((_, "")) => return None,
-        Some((core, variant)) => (core, Some(variant)),
+        Some((core, rest)) => (core, Some(rest)),
         None => (stripped, None),
     };
-    let components: Vec<&str> = core.split('.').collect();
+    let (variant, ls) = match rest {
+        None => (None, None),
+        Some(rest) if is_ls_build(rest) => (None, Some(rest)),
+        Some(rest) => match rest.rsplit_once('-') {
+            Some((variant, ls)) if is_ls_build(ls) => {
+                if variant.is_empty() {
+                    return None;
+                }
+                (Some(variant), Some(ls))
+            }
+            _ => (Some(rest), None),
+        },
+    };
+
+    let glue_at = core
+        .bytes()
+        .position(|b| !(b.is_ascii_digit() || b == b'.'))
+        .unwrap_or(core.len());
+    let (version, glue) = core.split_at(glue_at);
+    let glue = match glue {
+        "" => None,
+        _ if ls.is_none() => return None,
+        glue => {
+            let glue = glue.trim_start_matches(['_', '+', '~']);
+            let identifier =
+                |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric());
+            if !glue.split('.').all(identifier) {
+                return None;
+            }
+            Some(glue)
+        }
+    };
+
+    let components: Vec<&str> = version.split('.').collect();
     let numeric = |c: &&str| !c.is_empty() && c.bytes().all(|b| b.is_ascii_digit());
     if !(2..=4).contains(&components.len()) || !components.iter().all(numeric) {
         return None;
     }
+    let build = match (glue, ls) {
+        (None, None) => None,
+        (Some(glue), Some(ls)) => Some(format!("{glue}.{ls}")),
+        (glue, ls) => glue.or(ls).map(String::from),
+    };
     Some(TagVersion {
-        version: core.to_string(),
+        version: version.to_string(),
         variant: variant.map(String::from),
+        build,
     })
+}
+
+/// `ls` and a build number: linuxserver.io's suffix for one build of a
+/// release.
+fn is_ls_build(s: &str) -> bool {
+    s.strip_prefix("ls")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Whether a tag names an exact release and can be assumed immutable.
@@ -111,33 +170,16 @@ pub fn parse_version(tag: &str) -> Option<TagVersion> {
 /// immutable-as-floating just costs a redundant HEAD per refresh — so when in
 /// doubt, classify as floating.
 ///
-/// A tag is immutable iff, after stripping an optional leading `v`, its core
-/// (everything before the first `-`) is a complete dotted version with at
-/// least three numeric components (`1.2.3`, `1.2.3.4`). The final component
-/// may carry a trailing alphanumeric run (`10.10.0ubu2404`, as linuxserver.io
-/// glues the distro onto the patch version). A `-suffix` (variant like
-/// `-alpine`, prerelease like `-rc1`, or build like `-ls38`) doesn't affect
-/// immutability. Truncated versions (`3`, `3.41`), named tags (`latest`,
-/// `alpine`), and everything else float.
+/// A tag is immutable iff it names a version as [`parse_version`] reads it
+/// and either the version has at least three components (`1.2.3`,
+/// `1.2.3.4`) or the tag carries a build (`12.0ubu2604-ls48`: linuxserver.io
+/// documents its `-lsNN` tags as static). A `-suffix` (variant like
+/// `-alpine`, prerelease like `-rc1`) doesn't affect immutability.
+/// Truncated versions (`3`, `3.41`), named tags (`latest`, `alpine`), and
+/// everything else float.
 pub fn is_immutable(tag: &str) -> bool {
-    let tag = tag.strip_prefix('v').unwrap_or(tag);
-    let core = tag.split('-').next().unwrap_or("");
-
-    let components: Vec<&str> = core.split('.').collect();
-    let Some((last, init)) = components.split_last() else {
-        return false;
-    };
-    components.len() >= 3
-        && init
-            .iter()
-            .all(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_digit()))
-        && is_digits_then_alnum(last)
-}
-
-/// One or more digits, optionally followed by alphanumerics ("0", "0ubu2404").
-fn is_digits_then_alnum(s: &str) -> bool {
-    let digits = s.bytes().take_while(|b| b.is_ascii_digit()).count();
-    digits > 0 && s.bytes().skip(digits).all(|b| b.is_ascii_alphanumeric())
+    parse_version(tag)
+        .is_some_and(|parsed| parsed.build.is_some() || parsed.version.split('.').count() >= 3)
 }
 
 #[cfg(test)]
@@ -226,6 +268,15 @@ mod tests {
         Some(TagVersion {
             version: version.to_string(),
             variant: variant.map(String::from),
+            build: None,
+        })
+    }
+
+    fn built(version: &str, variant: Option<&str>, build: &str) -> Option<TagVersion> {
+        Some(TagVersion {
+            version: version.to_string(),
+            variant: variant.map(String::from),
+            build: Some(build.to_string()),
         })
     }
 
@@ -259,7 +310,8 @@ mod tests {
         );
         assert_eq!(
             parse_version("4.0.19.2979-ls323"),
-            version("4.0.19.2979", Some("ls323"))
+            built("4.0.19.2979", None, "ls323"),
+            "a linuxserver build number is not a variant"
         );
         assert_eq!(parse_version("1.2.3-rc1"), version("1.2.3", Some("rc1")));
         assert_eq!(
@@ -280,6 +332,50 @@ mod tests {
     }
 
     #[test]
+    fn linuxserver_builds_carry_glue_and_build_number_as_build_metadata() {
+        // Jellyfin 12 dropped the patch component and its deb is 12.0+ubu2604.
+        assert_eq!(
+            parse_version("12.0ubu2604-ls48"),
+            built("12.0", None, "ubu2604.ls48")
+        );
+        assert_eq!(
+            parse_version("10.11.11ubu2404-ls42"),
+            built("10.11.11", None, "ubu2404.ls42")
+        );
+        // qbittorrent glues its libtorrent version on with an underscore.
+        assert_eq!(
+            parse_version("5.2.3_v2.0.14-ls475"),
+            built("5.2.3", None, "v2.0.14.ls475")
+        );
+        // A variant between the version and the build number survives.
+        assert_eq!(
+            parse_version("10.6.4-1-ls90"),
+            built("10.6.4", Some("1"), "ls90")
+        );
+        assert_eq!(
+            parse_version("14.3.2.99202012272006-7195-abb854a1eubuntu18.04.1-ls108"),
+            built(
+                "14.3.2.99202012272006",
+                Some("7195-abb854a1eubuntu18.04.1"),
+                "ls108"
+            )
+        );
+        // Only a build number vouches for glue.
+        assert_eq!(parse_version("12.0ubu2604"), None);
+        assert_eq!(parse_version("12.0ubu2604-alpine"), None);
+        assert_eq!(
+            parse_version("1.2.3rc1-ls5"),
+            built("1.2.3", None, "rc1.ls5")
+        );
+        assert_eq!(parse_version("1.2.3.-ls5"), None, "empty component");
+        assert_eq!(parse_version("1.2.3--ls5"), None, "empty variant");
+        assert_eq!(parse_version("1.2.3-ls"), version("1.2.3", Some("ls")));
+        assert_eq!(parse_version("1.2.3-lsx1"), version("1.2.3", Some("lsx1")));
+        assert_eq!(parse_version("develop-4.0.20.3012-ls191"), None);
+        assert_eq!(parse_version("nightly-2026090709ubu2604-ls100"), None);
+    }
+
+    #[test]
     fn full_versions_are_immutable() {
         assert!(is_immutable("v3.41.3"));
         assert!(is_immutable("3.5.7"));
@@ -289,6 +385,18 @@ mod tests {
         assert!(is_immutable("v0.14.9"));
         assert!(is_immutable("10.10.0ubu2404-ls38"));
         assert!(is_immutable("10.6.4-1-ls10"));
+    }
+
+    #[test]
+    fn linuxserver_builds_are_immutable_even_when_two_part() {
+        assert!(is_immutable("12.0ubu2604-ls48"));
+        assert!(is_immutable("5.2.3_v2.0.14-ls475"));
+        assert!(is_immutable("15.11-ls3"));
+        // The same shapes without the build number keep floating.
+        assert!(!is_immutable("12.0ubu2604"));
+        assert!(!is_immutable("12.0"));
+        assert!(!is_immutable("5.2.3_v2.0.14"));
+        assert!(!is_immutable("version-12.0ubu2604"));
     }
 
     #[test]
