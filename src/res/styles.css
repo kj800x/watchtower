@@ -169,6 +169,11 @@ code,
   white-space: nowrap;
 }
 
+/* Prose reusing the muted style wraps like prose. */
+p.cell-secondary {
+  white-space: normal;
+}
+
 .cell-actions {
   white-space: nowrap;
   text-align: right;
