@@ -93,9 +93,6 @@ fn render_exclusions(
                 code { "/api/lookup" } " and " code { "/api/events" }
                 ", so consumers never pick them. A trailing " code { ".*" } " excludes a whole family."
             }
-            @if let Some(why) = classify::publisher_alias(&repo.name, "0.0.0") {
-                p class="cell-secondary" { "Built-in for this publisher: " (why) "." }
-            }
             @if !rules.is_empty() {
                 table class="data-table exclusion-table" {
                     thead { tr { th { "Version" } th { "Note" } th { "Added" } th {} } }
